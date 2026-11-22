@@ -54,6 +54,19 @@
 button:focus-visible,.student-select:focus-visible{outline:3px solid #76b6c8;outline-offset:2px}
 @media(max-width:850px){.student-grid{gap:7px}.login-wrap{padding:20px}}
 @media(max-width:560px){.student-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.login-top .fish-illustration{display:none}.login-foot{flex-direction:column;align-items:stretch}}
+
+/* Student passage text highlighting — independently stored from the editable records */
+.marker-toolbar{padding:10px 18px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-bottom:1px solid #e2ecea;background:#f9fdfc}
+.marker-toolbar .marker-help{font-size:12px;color:#54727d;flex:1;min-width:200px;line-height:1.45}
+.marker-toolbar button{background:#fff;border:1px solid #cbdfe1;color:#355c69;padding:8px 11px;border-radius:10px;font-size:12px;font-weight:800;white-space:nowrap}
+.marker-toolbar .highlighter{background:#fff6ce;border-color:#eadc9d}.marker-toolbar .underline-tool{text-decoration:underline;text-underline-offset:3px}
+.marker-toolbar .marker-clear{color:#8b5c5c;border-color:#e7caca}
+#selectionHelp{font-size:11px;color:#668c8e;min-width:100px}
+.passage-content{white-space:pre-line;user-select:text;-webkit-user-select:text;touch-action:pan-y}
+.mark-highlight{border-radius:2px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.mark-yellow{background:#ffef9d}.mark-orange{background:#ffd9a5}.mark-pink{background:#fad0de}.mark-sky,.mark-cyan{background:#cdeffa}
+.mark-underline{text-decoration:underline;text-decoration-color:#31586a;text-decoration-thickness:2px;text-underline-offset:3px}
+@media(max-width:800px){.marker-toolbar{padding:9px}.marker-toolbar .marker-help{flex-basis:100%}.marker-toolbar button{padding:8px 9px}}
 </style>
 </head>
 <body>
@@ -64,19 +77,20 @@ button:focus-visible,.student-select:focus-visible{outline:3px solid #76b6c8;out
 const CATS=[{key:'vivid',label:'생생질문'},{key:'deep',label:'곰곰질문'},{key:'if',label:'라면질문'}];
 let numbers=[],rows=[],config={},student=null,token=sessionStorage.getItem('rf-student-token')||'',state=null,modal=null,drag=null,floating=null,completeTab='questions';
 let chosen=null,dirty=false,saveTimer=null,savingPromise=null;
+ let chosenPassageRange=null;
 const $=s=>document.querySelector(s),app=$('#app');
 function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]))}
-function asState(s){return {stage:s.phase,first:s.first,second:s.second,originalFirst:s.original_first,originalSecond:s.original_second,initialCards:s.initial_cards,cards:s.cards,excluded:s.excluded,submittedAt:s.submitted_at,completedAt:s.stage1_at,revision:s.revision}}
+function asState(s){return {stage:s.phase,first:s.first,second:s.second,originalFirst:s.original_first,originalSecond:s.original_second,originalAnnotations:s.original_annotations||[],annotations:s.annotations||[],initialCards:s.initial_cards,cards:s.cards,excluded:s.excluded,submittedAt:s.submitted_at,completedAt:s.stage1_at,revision:s.revision}}
 async function api(path,data,auth=token){let res=await fetch(path,{method:data===undefined?'GET':'POST',headers:{...(data!==undefined?{'Content-Type':'application/json'}:{}),...(auth?{'Authorization':'Bearer '+auth}:{})},...(data===undefined?{}:{body:JSON.stringify(data)}),cache:'no-store'});let obj=await res.json().catch(()=>({}));if(!res.ok)throw Error(obj.error||'서버에 연결하지 못했어요.');return obj}
 function markStatus(message,error=false){let el=$('#saveStatus')||$('#networkStatus');if(el){el.textContent=message;el.classList.toggle('error',error)}}
 function backupKey(){return 'rf-pending-'+student}
-function restorePending(server){try{let b=JSON.parse(localStorage.getItem(backupKey())||'null');if(b&&b.version===server.revision&&b.stage===server.phase&&b.stage!==3){if(b.stage===1){state.first=b.first;state.second=b.second}else if(b.stage===2){state.cards=b.cards}dirty=true;setTimeout(()=>flushSave().catch(()=>{}),400)}}catch(e){}}
-function save(){if(!state||state.stage===3)return;dirty=true;try{localStorage.setItem(backupKey(),JSON.stringify({version:state.revision,stage:state.stage,first:state.first,second:state.second,cards:state.cards}))}catch(e){}
+function restorePending(server){try{let b=JSON.parse(localStorage.getItem(backupKey())||'null');if(b&&b.version===server.revision&&b.stage===server.phase&&b.stage!==3){if(b.stage===1){state.first=b.first;state.second=b.second;if(Array.isArray(b.annotations))state.annotations=b.annotations}else if(b.stage===2){state.cards=b.cards}dirty=true;setTimeout(()=>flushSave().catch(()=>{}),400)}}catch(e){}}
+function save(){if(!state||state.stage===3)return;dirty=true;try{localStorage.setItem(backupKey(),JSON.stringify({version:state.revision,stage:state.stage,first:state.first,second:state.second,annotations:state.annotations,cards:state.cards}))}catch(e){}
   markStatus('자동 저장 중…');clearTimeout(saveTimer);saveTimer=setTimeout(()=>flushSave().catch(()=>{}),500)}
 async function flushSave(){clearTimeout(saveTimer);if(savingPromise){try{await savingPromise}catch(e){};}
  if(!dirty||!state||state.stage===3)return;
  dirty=false;let sentStage=state.stage;
- const payload=sentStage===1?{revision:state.revision,first:[...state.first],second:[...state.second]}:{revision:state.revision,cards:JSON.parse(JSON.stringify(state.cards))};
+ const payload=sentStage===1?{revision:state.revision,first:[...state.first],second:[...state.second],annotations:JSON.parse(JSON.stringify(state.annotations))}:{revision:state.revision,cards:JSON.parse(JSON.stringify(state.cards))};
  savingPromise=api(sentStage===1?'/api/student/save-records':'/api/student/save-cards',payload);
  try{const r=await savingPromise;state.revision=r.student.revision;if(!dirty){try{localStorage.removeItem(backupKey())}catch(e){}}markStatus('자동 저장 완료 ✓')}
  catch(e){dirty=true;markStatus('저장 실패: '+e.message,true);throw e}
@@ -94,9 +108,55 @@ function render(){if(!state)return renderLogin();app.className=state.stage===1?'
 function fishSvg(){return `<svg class="fish-illustration" viewBox="0 0 175 120" aria-hidden="true"><g stroke="#466e7a" stroke-linecap="round" stroke-linejoin="round" stroke-width="3.5"><path d="M44 57 C25 39 18 38 11 31 C13 52 21 58 14 80 C35 77 42 72 47 66" fill="#f7bd87"/><path d="M41 63 Q55 15 108 25 Q143 38 149 58 Q151 87 106 98 Q59 96 41 63Z" fill="#fbd0a4"/><path d="M89 24 Q78 9 74 17 L70 29" fill="#aed6c3"/><path d="M89 91 L102 109 L111 96" fill="#afd5c2"/><path d="M58 43 Q70 50 61 57 Q53 58 53 52" fill="#a6d7d4" stroke-width="2.5"/><path d="M85 39 Q95 48 89 55 Q80 52 80 46" fill="#a8ccd9" stroke-width="2.5"/><path d="M65 65 Q78 70 67 80" fill="#f5e89e" stroke-width="2.5"/><path d="M93 62 Q105 69 96 79" fill="#bcdcc4" stroke-width="2.5"/><path d="M117 44 C123 37 131 40 134 45" fill="none" stroke-width="2.6"/><path d="M130 59 Q123 66 116 60" fill="none" stroke-width="2.5"/><circle cx="121" cy="47" r="3.8" fill="#3f5661" stroke-width="1"/><path d="M52 48 Q46 58 50 72" fill="none" stroke-width="2" opacity=".6"/></g><circle cx="165" cy="22" r="6" fill="none" stroke="#95c6d1" stroke-width="3"/><circle cx="151" cy="10" r="3.5" fill="none" stroke="#95c6d1" stroke-width="2"/></svg>`}
 function brandSvg(){return `<svg viewBox="0 0 40 40" aria-hidden="true"><path d="M12 20 L3 11 L4 30 L13 24 Q24 38 35 21 Q30 4 13 17Z" fill="#f6c49e" stroke="#567c85" stroke-width="2.2" stroke-linejoin="round"/><circle cx="29" cy="18" r="2" fill="#365965"/><path d="M17 17 Q13 23 18 27 M22 14 Q20 21 23 26" fill="none" stroke="#8dbfc0" stroke-width="2" stroke-linecap="round"/></svg>`}
 function heading(step){const one=step===1;return `<div class="heading"><div class="title-cluster"><p class="eyebrow">${one?'STEP 01 · 자세히 읽기':'STEP 02 · 질문 분류'}</p><h1>${one?'내 기록을 다시 살펴봐요':'질문을 알맞은 칸으로 옮겨요'}</h1><p class="desc">${one?'AI가 정리한 내용과 종이 활동지를 비교하고, 잘못된 부분을 직접 고쳐 보세요.':'AI가 분류한 질문을 살펴보고, 다르게 생각하는 질문을 옮기거나 추가해 보세요.'}</p></div><div class="heading-art">${one?`${fishSvg()}<span class="bubble one"></span><span class="bubble two"></span><span class="bubble three"></span>`:''}<div class="stepper" aria-label="${step}단계 중 2단계"><span>1단계</span><i class="${step>=1?'active':''}"></i><i class="${step>=2?'active':''}"></i><span>2단계</span></div></div></div>`}
-function recordView(){return `<section class="panel" aria-label="자세히 읽기 기록 수정"><div class="panel-head"><strong>나의 자세히 읽기 기록</strong><div class="mini-info">✎ &nbsp; 1차·2차 기록만 수정할 수 있어요</div></div><div class="table-viewport"><table class="record-table"><colgroup><col/><col/><col/></colgroup><thead><tr><th scope="col">글</th><th scope="col">1차 기록</th><th scope="col">2차 기록</th></tr></thead><tbody>${rows.map((t,i)=>`<tr><td class="passage"><span class="rowno">장면 ${String(i+1).padStart(2,'0')}</span>${escapeHtml(t)}</td><td><textarea aria-label="${i+1}행 1차 기록" data-row="${i}" data-col="first" placeholder="기록이 없으면 비워두세요">${escapeHtml(state.first[i])}</textarea></td><td><textarea aria-label="${i+1}행 2차 기록" data-row="${i}" data-col="second" placeholder="기록이 없으면 비워두세요">${escapeHtml(state.second[i])}</textarea></td></tr>`).join('')}</tbody></table></div><div class="panel-foot"><span class="foot-caption" id="saveStatus">학생이 쓴 글을 확인하고 필요한 곳만 수정하세요. 자동 저장됩니다.</span><button class="primary" id="nextBtn">수정 완료하고 다음으로 &nbsp; →</button></div></section>`}
+function markedPassage(text,row){
+ const marks=(state.annotations||[]).filter(m=>m.row===row&&m.start>=0&&m.end<=text.length);
+ const cuts=new Set([0,text.length]);for(const m of marks){cuts.add(m.start);cuts.add(m.end)}
+ const points=[...cuts].sort((a,b)=>a-b);let out='';
+ for(let i=0;i<points.length-1;i++){
+  let start=points[i],end=points[i+1];if(end<=start)continue;
+  const overlapping=marks.filter(m=>m.start<=start&&m.end>=end);
+  const hi=overlapping.filter(m=>m.type==='highlight').at(-1),under=overlapping.some(m=>m.type==='underline');
+  const classes=['passage-segment'];if(hi)classes.push('mark-highlight','mark-'+hi.color);if(under)classes.push('mark-underline');
+  out+=`<span class="${classes.join(' ')}">${escapeHtml(text.slice(start,end))}</span>`;
+ }
+ return out;
+}
+function capturePassageRange(){
+ const selection=window.getSelection();if(!selection||selection.isCollapsed||!selection.rangeCount)return null;
+ const r=selection.getRangeAt(0);
+ const anchor=r.startContainer.nodeType===1?r.startContainer:r.startContainer.parentElement;
+ const focus=r.endContainer.nodeType===1?r.endContainer:r.endContainer.parentElement;
+ const el=anchor?.closest('.passage-content');if(!el||el!==focus?.closest('.passage-content'))return null;
+ const startRange=document.createRange();startRange.selectNodeContents(el);startRange.setEnd(r.startContainer,r.startOffset);
+ const endRange=document.createRange();endRange.selectNodeContents(el);endRange.setEnd(r.endContainer,r.endOffset);
+ const start=startRange.toString().length,end=endRange.toString().length;
+ if(end<=start)return null;
+ return {row:Number(el.dataset.row),start,end};
+}
+function applyPassageMark(kind){
+ const selection=chosenPassageRange||capturePassageRange();
+ if(!selection){$('#selectionHelp').textContent='먼저 본문에서 글자를 선택해 주세요.';return}
+ const {row,start,end}=selection;
+ const result=[];
+ for(const m of (state.annotations||[])){
+  if(m.row!==row||m.end<=start||m.start>=end||(kind!=='clear'&&m.type!==kind)){
+   result.push(m);continue;
+  }
+  if(m.start<start)result.push({...m,end:start});
+  if(m.end>end)result.push({...m,start:end});
+ }
+ if(kind!=='clear')result.push({row,start,end,type:kind,color:kind==='highlight'?'yellow':'dark',source:'student'});
+ state.annotations=result;
+ const passage=document.querySelector(`.passage-content[data-row="${row}"]`);
+ if(passage)passage.innerHTML=markedPassage(rows[row],row);
+ window.getSelection()?.removeAllRanges();chosenPassageRange=null;
+ $('#selectionHelp').textContent=kind==='clear'?'표시를 지웠어요.':'표시를 추가했어요.';
+ save();
+}
+document.addEventListener('selectionchange',()=>{if(state?.stage!==1)return;const r=capturePassageRange();if(r)chosenPassageRange=r});
+function recordView(){return `<section class="panel" aria-label="자세히 읽기 기록 수정"><div class="panel-head"><strong>나의 자세히 읽기 기록</strong><div class="mini-info">✎ &nbsp; 1차·2차 기록과 본문 표시를 수정할 수 있어요</div></div><div class="marker-toolbar" role="toolbar" aria-label="본문 표시 도구"><span class="marker-help">글에서 표시할 부분을 선택하세요. 태블릿에서는 길게 눌러 선택해요. 종이에서 옮긴 표시도 확인하고 고칠 수 있어요.</span><button class="highlighter" type="button" data-ink="highlight">형광펜</button><button class="underline-tool" type="button" data-ink="underline">밑줄</button><button class="marker-clear" type="button" data-ink="clear">표시 지우기</button><span id="selectionHelp" aria-live="polite"></span></div><div class="table-viewport"><table class="record-table"><colgroup><col/><col/><col/></colgroup><thead><tr><th scope="col">글</th><th scope="col">1차 기록</th><th scope="col">2차 기록</th></tr></thead><tbody>${rows.map((t,i)=>`<tr><td class="passage"><span class="rowno">장면 ${String(i+1).padStart(2,'0')}</span>${`<div class="passage-content" data-row="${i}">${markedPassage(t,i)}</div>`}</td><td><textarea aria-label="${i+1}행 1차 기록" data-row="${i}" data-col="first" placeholder="기록이 없으면 비워두세요">${escapeHtml(state.first[i])}</textarea></td><td><textarea aria-label="${i+1}행 2차 기록" data-row="${i}" data-col="second" placeholder="기록이 없으면 비워두세요">${escapeHtml(state.second[i])}</textarea></td></tr>`).join('')}</tbody></table></div><div class="panel-foot"><span class="foot-caption" id="saveStatus">학생이 쓴 글을 확인하고 필요한 곳만 수정하세요. 자동 저장됩니다.</span><button class="primary" id="nextBtn">수정 완료하고 다음으로 &nbsp; →</button></div></section>`}
 
-function bindRecord(){document.querySelectorAll('textarea[data-row]').forEach(el=>el.addEventListener('input',()=>{state[el.dataset.col][Number(el.dataset.row)]=el.value;save()}));$('#nextBtn').onclick=()=>{showModal(`<h2>정말 모두 확인했나요?</h2><p>AI가 읽은 내용과 실제로 쓴 활동지를 빠짐없이 비교했는지 다시 확인해 주세요.</p><div class="warning">다음 단계로 넘어가면 기록을 다시 수정하거나 1단계로 돌아올 수 없어요.</div><div class="modal-actions"><button class="secondary" data-close>다시 확인하기</button><button class="primary" id="confirmNext">네, 다음 단계로</button></div>`,()=>{$('#confirmNext').onclick=async()=>{let b=$('#confirmNext');b.disabled=true;closeModal();busy('질문을 추출하고 분류하고 있어요.');try{await flushSave();let result=await api('/api/student/advance',{});state=asState(result.student);unbusy();render()}catch(e){unbusy();alert(e.message);render()}}})}}
+function bindRecord(){chosenPassageRange=null;document.querySelectorAll('.passage-content').forEach(el=>{el.addEventListener('pointerup',()=>setTimeout(()=>{const r=capturePassageRange();if(r){chosenPassageRange=r;$('#selectionHelp').textContent='선택됨: '+rows[r.row].slice(r.start,r.end).slice(0,16)}},0));el.addEventListener('keyup',()=>{const r=capturePassageRange();if(r)chosenPassageRange=r})});document.querySelectorAll('[data-ink]').forEach(b=>{b.addEventListener('pointerdown',e=>{const r=capturePassageRange();if(r)chosenPassageRange=r;/* preserve selection captured on pointerdown */});b.addEventListener('click',()=>applyPassageMark(b.dataset.ink))});document.querySelectorAll('textarea[data-row]').forEach(el=>el.addEventListener('input',()=>{state[el.dataset.col][Number(el.dataset.row)]=el.value;save()}));$('#nextBtn').onclick=()=>{showModal(`<h2>정말 모두 확인했나요?</h2><p>AI가 읽은 내용과 실제로 쓴 활동지를 빠짐없이 비교했는지 다시 확인해 주세요.</p><div class="warning">다음 단계로 넘어가면 기록을 다시 수정하거나 1단계로 돌아올 수 없어요.</div><div class="modal-actions"><button class="secondary" data-close>다시 확인하기</button><button class="primary" id="confirmNext">네, 다음 단계로</button></div>`,()=>{$('#confirmNext').onclick=async()=>{let b=$('#confirmNext');b.disabled=true;closeModal();busy('질문을 추출하고 분류하고 있어요.');try{await flushSave();let result=await api('/api/student/advance',{});state=asState(result.student);unbusy();render()}catch(e){unbusy();alert(e.message);render()}}})}}
 function countBy(cat){return state.cards.filter(q=>q.category===cat).length}
 function changedCount(){let old=Object.fromEntries(state.initialCards.map(x=>[x.id,x.category]));return state.cards.filter(x=>!x.added&&old[x.id]&&old[x.id]!==x.category).length}
 function sortView(){return `<section class="sort-panel"><div class="sort-actions"><div class="stat-chip" id="sortStat">전체 질문 ${state.cards.length}개 · 이동 ${changedCount()}개 · 추가 ${state.cards.filter(x=>x.added).length}개</div><button class="add-btn" id="addQuestion">＋ 질문 추가</button></div><div class="board">${CATS.map(c=>`<div class="bucket" data-cat="${c.key}"><div class="bucket-title"><b>${c.label}</b><span class="count" data-count="${c.key}">${countBy(c.key)}</span></div><div class="bucket-sub">카드를 꾹 누른 뒤 옮겨 보세요</div><div class="notes-scroller"><div class="notes" data-list="${c.key}"></div></div></div>`).join('')}</div><div class="sort-footer"><span class="helper">카드 터치: 크게 보기 &nbsp; | &nbsp; 길게 눌러 이동: 분류 바꾸기</span><button class="primary paper-cta" id="submitBtn">검토 완료 · 제출하기 &nbsp; ✓</button></div></section>`}
@@ -118,7 +178,7 @@ function onPointerUp(e){if(!drag)return;const id=drag.id,wasDrag=drag.active;if(
 function onPointerCancel(){cleanupDrag();renderCards()}
 function completionStatus(){let count=state.cards.length, moved=changedCount(),added=state.cards.filter(x=>x.added).length;return `질문 ${count}개 · 분류 이동 ${moved}개 · 직접 추가 ${added}개`}
 function reviewBoard(){return `<div class="board" aria-label="제출한 질문 분류 결과">${CATS.map(c=>{const qs=state.cards.filter(q=>q.category===c.key);return `<section class="bucket" data-cat="${c.key}"><div class="bucket-title"><b>${c.label}</b><span class="count">${qs.length}</span></div><div class="bucket-sub">질문카드를 누르면 크게 읽을 수 있어요</div><div class="notes-scroller"><div class="notes">${qs.length?qs.map((q,i)=>`<div class="note ${q.added?'added':''}" role="button" tabindex="0" data-review-id="${escapeHtml(q.id)}" style="--rotate:${(i%4-1.5)*.36}deg" aria-label="질문 크게 보기: ${escapeHtml(q.text)}"><div class="note-copy">${escapeHtml(q.text)}</div></div>`).join(''):'<div class="empty-notes">이 유형에 분류한 질문이 없어요</div>'}</div></div></section>`}).join('')}</div>`}
-function reviewRecord(){return `<section class="panel complete-table-panel" aria-label="제출한 자세히 읽기 기록"><div class="panel-head"><strong>제출한 나의 기록</strong><div class="mini-info">✓ &nbsp; 읽기만 할 수 있어요</div></div><div class="table-viewport"><table class="record-table"><colgroup><col/><col/><col/></colgroup><thead><tr><th scope="col">글</th><th scope="col">1차 기록</th><th scope="col">2차 기록</th></tr></thead><tbody>${rows.map((t,i)=>`<tr><td class="passage"><span class="rowno">장면 ${String(i+1).padStart(2,'0')}</span>${escapeHtml(t)}</td><td><div class="record-text ${state.first[i]?'':'empty'}">${escapeHtml(state.first[i]||'기록 없음')}</div></td><td><div class="record-text ${state.second[i]?'':'empty'}">${escapeHtml(state.second[i]||'기록 없음')}</div></td></tr>`).join('')}</tbody></table></div></section>`}
+function reviewRecord(){return `<section class="panel complete-table-panel" aria-label="제출한 자세히 읽기 기록"><div class="panel-head"><strong>제출한 나의 기록</strong><div class="mini-info">✓ &nbsp; 읽기만 할 수 있어요</div></div><div class="table-viewport"><table class="record-table"><colgroup><col/><col/><col/></colgroup><thead><tr><th scope="col">글</th><th scope="col">1차 기록</th><th scope="col">2차 기록</th></tr></thead><tbody>${rows.map((t,i)=>`<tr><td class="passage"><span class="rowno">장면 ${String(i+1).padStart(2,'0')}</span>${markedPassage(t,i)}</td><td><div class="record-text ${state.first[i]?'':'empty'}">${escapeHtml(state.first[i]||'기록 없음')}</div></td><td><div class="record-text ${state.second[i]?'':'empty'}">${escapeHtml(state.second[i]||'기록 없음')}</div></td></tr>`).join('')}</tbody></table></div></section>`}
 function completeView(){return `<div class="heading"><div class="title-cluster"><p class="eyebrow">FINISH · 제출 완료</p><h1>내가 정리한 질문들이에요!</h1><p class="desc">제출한 결과를 다시 살펴볼 수 있어요. 수정하거나 이동할 수는 없어요.</p></div></div><section class="complete-content" aria-label="제출 결과 보기"><div class="complete-head"><div class="complete-head-main"><span class="complete-check" aria-hidden="true">✓</span><div><h2>${student}번 학생, 제출 완료!</h2><p>잘 마쳤어요. 제출한 내용은 그대로 보관돼요.</p></div></div><span class="lock-pill" aria-label="제출 완료, 수정 불가">🔒 수정 잠금</span></div><div class="complete-controls"><div class="view-tabs" role="tablist" aria-label="결과 종류 선택"><button id="tabQuestions" role="tab" aria-selected="${completeTab==='questions'}" class="${completeTab==='questions'?'active':''}" type="button">질문 분류 결과</button><button id="tabRecords" role="tab" aria-selected="${completeTab==='records'}" class="${completeTab==='records'?'active':''}" type="button">자세히 읽기 기록</button></div><span class="result-stat">${completionStatus()}</span></div>${completeTab==='questions'?reviewBoard():reviewRecord()}<div class="complete-footer"><span class="helper">${completeTab==='questions'?'카드를 누르면 질문을 크게 볼 수 있어요. 제출 후에는 위치를 바꿀 수 없어요.':'1차·2차 기록을 읽을 수 있지만 변경할 수 없어요.'}</span></div></section>`}
 
 function bindComplete(){

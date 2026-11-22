@@ -64,6 +64,10 @@ def initialize():
   columns={r['name'] for r in c.execute('PRAGMA table_info(student)')}
   if 'current_import_id' not in columns:
    c.execute('ALTER TABLE student ADD COLUMN current_import_id INTEGER')
+  if 'original_annotations' not in columns:
+   c.execute("ALTER TABLE student ADD COLUMN original_annotations TEXT NOT NULL DEFAULT '[]'")
+  if 'annotations' not in columns:
+   c.execute("ALTER TABLE student ADD COLUMN annotations TEXT NOT NULL DEFAULT '[]'")
   c.execute('CREATE TABLE IF NOT EXISTS import_batch (id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT NOT NULL, imported_at TEXT NOT NULL, student_numbers TEXT NOT NULL, sha256 TEXT NOT NULL, file_bytes INTEGER NOT NULL DEFAULT 0)')
   c.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
   c.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',('criteria',dumps(DEFAULT_CRITERIA)))
@@ -78,7 +82,7 @@ def get_student(c,n):
  row=c.execute('SELECT * FROM student WHERE number=?',(n,)).fetchone()
  if not row:raise ValueError('없는 학생 번호입니다.')
  out=dict(row)
- for k in ['original_first','original_second','first','second','initial_cards','cards','excluded']:out[k]=read_json(out[k])
+ for k in ['original_first','original_second','first','second','initial_cards','cards','excluded','original_annotations','annotations']:out[k]=read_json(out[k])
  return out
 
 def is_imported_record(s):
@@ -91,10 +95,10 @@ def import_listing(c):
  for b in c.execute('SELECT id,filename,imported_at,student_numbers FROM import_batch ORDER BY id DESC'):
   original=[int(n) for n in read_json(b['student_numbers'])]
   active=[n for n in original if students[n]['current_import_id']==b['id']]
-  blocked=[n for n in active if students[n]['phase']!=1 or students[n]['first']!=students[n]['original_first'] or students[n]['second']!=students[n]['original_second']]
+  blocked=[n for n in active if students[n]['phase']!=1 or students[n]['first']!=students[n]['original_first'] or students[n]['second']!=students[n]['original_second'] or students[n]['annotations']!=students[n]['original_annotations']]
   batches.append({'id':b['id'],'filename':b['filename'],'imported_at':b['imported_at'],'numbers':original,'active_numbers':active,'blocked_numbers':blocked,'can_delete':not blocked})
  legacy=[n for n,s in students.items() if s['current_import_id'] is None and is_imported_record(s)]
- blocked=[n for n in legacy if students[n]['phase']!=1 or students[n]['first']!=students[n]['original_first'] or students[n]['second']!=students[n]['original_second']]
+ blocked=[n for n in legacy if students[n]['phase']!=1 or students[n]['first']!=students[n]['original_first'] or students[n]['second']!=students[n]['original_second'] or students[n]['annotations']!=students[n]['original_annotations']]
  if legacy:
   batches.append({'id':'legacy','filename':'기존 등록 자료 (파일명 확인 불가)','imported_at':None,'numbers':legacy,'active_numbers':legacy,'blocked_numbers':blocked,'can_delete':not blocked})
  return batches
@@ -103,7 +107,7 @@ def clear_imported_students(c,numbers):
  blank=dumps(['']*len(PASSAGE))
  now=utcnow()
  for n in numbers:
-  c.execute('UPDATE student SET original_first=?,original_second=?,first=?,second=?,initial_cards="[]",cards="[]",excluded="[]",current_import_id=NULL,updated_at=?,revision=revision+1 WHERE number=?',
+  c.execute('UPDATE student SET original_first=?,original_second=?,first=?,second=?,initial_cards="[]",cards="[]",excluded="[]",original_annotations="[]",annotations="[]",current_import_id=NULL,updated_at=?,revision=revision+1 WHERE number=?',
    (blank,blank,blank,blank,now,n))
 
 
@@ -135,6 +139,52 @@ def validate_rows(records):
   if not isinstance(a,list) or len(a)!=len(PASSAGE) or any(not isinstance(x,str) or len(x)>2000 for x in a):
    raise ApiError(400,f'{key}는 {len(PASSAGE)}개 행의 문자열로 입력해야 합니다.')
  return records['first'],records['second']
+
+def validate_annotations(incoming):
+ if not isinstance(incoming,list) or len(incoming)>350:
+  raise ApiError(400,'밑줄·형광펜 표시 데이터가 올바르지 않아요.')
+ out=[]
+ for x in incoming:
+  if not isinstance(x,dict):raise ApiError(400,'본문 표시 형식을 확인해 주세요.')
+  row,start,end=x.get('row'),x.get('start'),x.get('end')
+  kind,color=x.get('type'),x.get('color')
+  if type(row)!=int or type(start)!=int or type(end)!=int or not 0<=row<len(PASSAGE) or not 0<=start<end<=len(PASSAGE[row]):
+   raise ApiError(400,'본문 표시 위치를 확인해 주세요.')
+  if kind not in ('highlight','underline') or (kind=='highlight' and color not in ('yellow','orange','pink','sky','cyan')) or (kind=='underline' and color!='dark'):
+   raise ApiError(400,'밑줄·형광펜 종류를 확인해 주세요.')
+  source=x.get('source','student')
+  if source not in ('photo_estimated','student'):raise ApiError(400,'표시 출처를 확인해 주세요.')
+  out.append({'row':row,'start':start,'end':end,'type':kind,'color':color,'source':source})
+ return out
+
+def parse_photo_annotations(items):
+ # The source JSON uses 1-based row numbers and extracted phrase text.
+ if not isinstance(items,list) or len(items)>350:raise ApiError(400,'학생별 표시 자료 형식이 올바르지 않아요.')
+ out=[];unmatched=[]
+ for ix,item in enumerate(items,1):
+  if not isinstance(item,dict) or type(item.get('row'))!=int or not 1<=item['row']<=len(PASSAGE):
+   raise ApiError(400,f'{ix}번째 표시의 행 번호가 올바르지 않아요.')
+  row=item['row']-1
+  kind=item.get('type'); color=item.get('color','yellow' if kind=='highlight' else 'dark')
+  if kind not in ('highlight','underline') or (kind=='highlight' and color not in ('yellow','pink','orange','sky','cyan')) or (kind=='underline' and color!='dark'):
+   raise ApiError(400,f'{ix}번째 표시의 종류가 올바르지 않아요.')
+  phrase=item.get('text')
+  if not isinstance(phrase,str) or not phrase.strip():raise ApiError(400,f'{ix}번째 표시의 문구가 없어요.')
+  full=PASSAGE[row]
+  start=full.find(phrase)
+  if start<0:
+   # Whitespace-only differences between paper text and the source text are common.
+   no_space=''.join(c for c in phrase if not c.isspace())
+   positions=[i for i,c in enumerate(full) if not c.isspace()]
+   condensed=''.join(full[i] for i in positions)
+   offset=condensed.find(no_space)
+   if offset>=0 and no_space:
+    start=positions[offset];end=positions[offset+len(no_space)-1]+1
+   else:
+    unmatched.append({'row':row+1,'text':phrase[:50]});continue
+  else:end=start+len(phrase)
+  out.append({'row':row,'start':start,'end':end,'type':kind,'color':color,'source':'photo_estimated'})
+ return validate_annotations(out),unmatched
 
 def login_check(ip,kind):
  now=time.time();key=(ip,kind)
@@ -231,11 +281,15 @@ def xlsx_bytes(snapshots):
  rows1=[['학생번호','단계','최근 수정','1단계 완료','최종 제출','AI 질문 수','최종 카드 수','직접 추가 수','이동 수']]
  rows2=[['학생번호','행','본문','AI 1차 기록','학생 수정 1차 기록','AI 2차 기록','학생 수정 2차 기록']]
  rows3=[['학생번호','질문 ID','질문','기록 차수','본문 행','최초 AI 분류','최종 분류','직접 추가']]
+ rows4=[['학생번호','원본·수정','행','표시 유형','색상','본문 발췌','출처']]
  labels={'vivid':'생생','deep':'곰곰','if':'라면'}
  for s in snapshots:
   initial={q['id']:q for q in s['initial_cards']};moved=sum(q['category']!=initial[q['id']]['category'] for q in s['cards'] if q['id'] in initial)
   rows1.append([s['number'],s['phase'],s['updated_at'],s['stage1_at'],s['submitted_at'],len(initial),len(s['cards']),sum(q.get('added',False) for q in s['cards']),moved])
   for i,passage in enumerate(PASSAGE):rows2.append([s['number'],i+1,passage,s['original_first'][i],s['first'][i],s['original_second'][i],s['second'][i]])
+  for tag,arr in [('원본',s['original_annotations']),('수정',s['annotations'])]:
+   for a in arr:
+    rows4.append([s['number'],tag,a['row']+1,'형광펜' if a['type']=='highlight' else '밑줄',a['color'],PASSAGE[a['row']][a['start']:a['end']],a.get('source','')])
   for q in s['cards']:
    old=initial.get(q['id']);rows3.append([s['number'],q['id'],q['text'],('1차' if q.get('origin')=='first' else '2차' if q.get('origin')=='second' else '학생 추가'),q.get('sourceRow'),labels.get(old['category'],'') if old else '',labels[q['category']],'O' if q.get('added') else ''])
  def xmlsheet(rows):
@@ -253,11 +307,11 @@ def xlsx_bytes(snapshots):
   x.append('</sheetData></worksheet>');return ''.join(x)
  out=io.BytesIO()
  with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
-  z.writestr('[Content_Types].xml','''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'''+''.join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(1,4))+'</Types>')
+  z.writestr('[Content_Types].xml','''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'''+''.join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(1,5))+'</Types>')
   z.writestr('_rels/.rels','''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>''')
-  z.writestr('xl/workbook.xml','''<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'''+''.join(f'<sheet name="{name}" sheetId="{i}" r:id="rId{i}"/>' for i,name in enumerate(['학생별 현황','자세히 읽기 수정','질문 분류 결과'],1))+'</sheets></workbook>')
-  z.writestr('xl/_rels/workbook.xml.rels','''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'''+''.join(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>' for i in range(1,4))+'</Relationships>')
-  for i,rows in enumerate([rows1,rows2,rows3],1):z.writestr(f'xl/worksheets/sheet{i}.xml',xmlsheet(rows))
+  z.writestr('xl/workbook.xml','''<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'''+''.join(f'<sheet name="{name}" sheetId="{i}" r:id="rId{i}"/>' for i,name in enumerate(['학생별 현황','자세히 읽기 수정','질문 분류 결과','본문 표시 기록'],1))+'</sheets></workbook>')
+  z.writestr('xl/_rels/workbook.xml.rels','''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'''+''.join(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>' for i in range(1,5))+'</Relationships>')
+  for i,rows in enumerate([rows1,rows2,rows3,rows4],1):z.writestr(f'xl/worksheets/sheet{i}.xml',xmlsheet(rows))
  return out.getvalue()
 
 class Handler(SimpleHTTPRequestHandler):
@@ -334,7 +388,8 @@ class Handler(SimpleHTTPRequestHandler):
      s=get_student(c,n)
      if s['phase']!=1:raise ApiError(409,'이미 다음 단계로 이동해 기록을 수정할 수 없어요.')
      if body.get('revision')!=s['revision']:raise ApiError(409,'다른 화면에서 수정한 기록이 있어요. 새로고침해 주세요.')
-     c.execute('UPDATE student SET first=?,second=?,revision=revision+1,updated_at=? WHERE number=?',(dumps(first),dumps(second),utcnow(),n))
+     annotations=validate_annotations(body.get('annotations',s['annotations']))
+     c.execute('UPDATE student SET first=?,second=?,annotations=?,revision=revision+1,updated_at=? WHERE number=?',(dumps(first),dumps(second),dumps(annotations),utcnow(),n))
      s=get_student(c,n)
     return self.json_response(200,{'student':s})
    if path=='/api/student/advance':
@@ -372,6 +427,15 @@ class Handler(SimpleHTTPRequestHandler):
     return self.json_response(200,{'student':s})
   if path.startswith('/api/teacher/'):
    self.auth('teacher')
+   if path=='/api/teacher/preview-classification':
+    n=body.get('number')
+    if type(n)!=int or n not in NUMS:raise ApiError(400,'미리 볼 학생 번호를 선택해 주세요.')
+    with db() as c:
+     sample=get_student(c,n)
+     criteria=json.loads(c.execute('SELECT value FROM settings WHERE key="criteria"').fetchone()['value'])
+     reference_text=c.execute('SELECT value FROM settings WHERE key="reference_text"').fetchone()['value']
+    cards,excluded=classify_demo(sample['first'],sample['second']) if DEMO_MODE else classify_openai(sample['first'],sample['second'],criteria,reference_text)
+    return self.json_response(200,{'ok':True,'number':n,'cards':cards,'excluded':excluded,'mode':'demo' if DEMO_MODE else 'ai','saved':False})
    if path=='/api/teacher/test-ai':
     if DEMO_MODE:raise ApiError(400,'현재 시험 모드입니다. DEMO_MODE=0을 설정한 후 시험해 주세요.')
     with db() as c:
@@ -414,6 +478,23 @@ class Handler(SimpleHTTPRequestHandler):
       clear_imported_students(c,nums)
       c.execute('DELETE FROM import_batch WHERE id=?',(batch_id,))
     return self.json_response(200,{'ok':True,'cleared':nums})
+   if path=='/api/teacher/import-annotations':
+    raw=body.get('annotations')
+    if not isinstance(raw,dict):raise ApiError(400,'annotations 항목이 없는 JSON 파일이에요.')
+    staged=[];unmatched=[]
+    for num,items in raw.items():
+     if not str(num).isdigit() or int(num) not in NUMS:raise ApiError(400,f'{num}번은 사용할 수 없는 학생 번호예요.')
+     anns,missing=parse_photo_annotations(items)
+     staged.append((int(num),anns));unmatched.extend([{'student':int(num),**x} for x in missing])
+    if not staged:raise ApiError(400,'등록할 표시 자료가 없어요.')
+    with LOCK,db() as c:
+     for n,anns in staged:
+      current=get_student(c,n)
+      if current['phase']!=1 or current['annotations']!=current['original_annotations']:
+       raise ApiError(409,f'{n}번은 이미 본문 표시를 수정하거나 2단계로 이동했어요. 표시를 덮어쓰지 않았어요.')
+     for n,anns in staged:
+      c.execute('UPDATE student SET original_annotations=?,annotations=?,revision=revision+1,updated_at=? WHERE number=?',(dumps(anns),dumps(anns),utcnow(),n))
+    return self.json_response(200,{'ok':True,'students':[n for n,_ in staged],'count':sum(len(a) for _,a in staged),'unmatched':unmatched})
    if path=='/api/teacher/import':
     students=body.get('students')
     if not isinstance(students,dict):raise ApiError(400,'students 항목을 확인해 주세요.')
@@ -432,7 +513,7 @@ class Handler(SimpleHTTPRequestHandler):
      for n,first,second in staged:
       s=get_student(c,n)
       if s['phase']!=1:raise ApiError(409,f'{n}번은 이미 2단계 이상 진행해 덮어쓸 수 없어요.')
-      if s['first']!=s['original_first'] or s['second']!=s['original_second']:
+      if s['first']!=s['original_first'] or s['second']!=s['original_second'] or s['annotations']!=s['original_annotations']:
        raise ApiError(409,f'{n}번은 학생이 수정을 시작했어요. 덮어쓰지 않았어요.')
      cur=c.execute('INSERT INTO import_batch(filename,imported_at,student_numbers,sha256,file_bytes) VALUES(?,?,?,?,?)',
        (filename,utcnow(),dumps([n for n,_,_ in staged]),digest,file_bytes))
