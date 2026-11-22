@@ -15,6 +15,7 @@ BUNDLED_DATA=ROOT/'data'
 DATA=Path(os.getenv('DATA_DIR',str(ROOT/'runtime_data'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 PASSAGE=json.loads((BUNDLED_DATA/'passage.json').read_text(encoding='utf-8'))['passages']
+DEFAULT_REFERENCE_TEXT='\n\n'.join(PASSAGE)
 NUMS=[1]+list(range(3,18))
 DB_PATH=DATA/'classroom.sqlite3'
 PRIVATE_PATH=DATA/'settings.private.json'
@@ -62,6 +63,8 @@ def initialize():
   c.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
   c.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',('criteria',dumps(DEFAULT_CRITERIA)))
   c.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',('criteria_version','1'))
+  c.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',('reference_text',DEFAULT_REFERENCE_TEXT))
+  c.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',('reference_version','1'))
   for n in NUMS:
    arr=dumps(['']*len(PASSAGE));c.execute('INSERT OR IGNORE INTO student(number,original_first,original_second,first,second,updated_at) VALUES (?,?,?,?,?,?)',(n,arr,arr,arr,arr,utcnow()))
 initialize()
@@ -137,7 +140,7 @@ def classify_demo(first,second):
     cards.append({'id':'ai-'+str(len(cards)+1),'text':q,'category':category_demo(q),'origin':origin,'sourceRow':i+1,'added':False})
  return cards,ex
 
-def classify_openai(first,second,criteria):
+def classify_openai(first,second,criteria,reference_text):
  if not KEY:raise ApiError(503,'OpenAI API 키가 연결되지 않았어요. 기록은 그대로 보존돼요.')
  data=[{'row':i+1,'passage':PASSAGE[i],'first':first[i],'second':second[i]} for i in range(len(PASSAGE)) if first[i].strip() or second[i].strip()]
  if not data:return [],[]
@@ -148,7 +151,7 @@ def classify_openai(first,second,criteria):
    'text':{'type':'string'},'reason':{'type':'string'},'origin':{'type':'string','enum':['first','second']},'sourceRow':{'type':'integer'}}}}
  }}
  system='''초등학교 6학년 국어 수업용 질문 추출·분류 담당자다. 학생이 고친 원문에서 실제로 궁금한 핵심 질문만 뽑는다. 학생 표현은 가능한 바꾸지 않는다. "무지개 물고기는 왜 행복할까? 친구를 사귀어서 그런가? 나도 비슷한 경험이 있어."에서는 "무지개 물고기는 왜 행복할까?"만 핵심 질문으로 추출한다. 뒤의 추측·생각·느낌을 별개의 질문으로 무리하게 추출하지 않는다. 서로 의미가 같은 질문은 한 번만 남긴다. 다른 뜻의 질문은 모두 살린다. 어색한 질문도 함부로 교정하지 않는다. 질문은 무조건 vivid/deep/if 중 하나로 분류한다. excluded에는 버린 후보 중 학생이 확인할 만한 내용만 간결히 기록한다. 표 행은 1부터 시작한다. 반드시 입력 데이터의 origin과 sourceRow를 정확히 유지한다. 분류 기준:\n'''+dumps(criteria)
- body={'model':API_MODEL,'messages':[{'role':'system','content':system},{'role':'user','content':dumps(data)}],
+ body={'model':API_MODEL,'messages':[{'role':'system','content':system + '\n질문을 생생/곰곰/라면으로 분류할 때 반드시 제공된 참고 원문 전체와 행별 본문을 함께 고려한다. ' + '본문에 직접 확인되는 사실인지, 본문에 근거한 해석인지, 텍스트 밖의 경험과 가치 판단인지를 구분한다. 질문에 쓰인 어미만 보고 유형을 결정하지 않는다.'},{'role':'user','content':dumps({'referenceText':reference_text,'studentRecords':data})}],
        'temperature':0,'response_format':{'type':'json_schema','json_schema':{'name':'questions_result','strict':True,'schema':schema}}}
  req=urllib.request.Request('https://api.openai.com/v1/chat/completions',data=dumps(body).encode('utf-8'),headers={'Authorization':'Bearer '+KEY,'Content-Type':'application/json'},method='POST')
  try:
@@ -259,7 +262,9 @@ class Handler(SimpleHTTPRequestHandler):
     items=[get_student(c,n) for n in NUMS]
     criteria=json.loads(c.execute('SELECT value FROM settings WHERE key="criteria"').fetchone()['value'])
     version=int(c.execute('SELECT value FROM settings WHERE key="criteria_version"').fetchone()['value'])
-   return self.json_response(200,{'students':items,'criteria':criteria,'criteria_version':version,'mode':('demo' if DEMO_MODE else ('api' if KEY else 'no-key')),'requiresPin':REQUIRE_PIN,'student_pins':PRIV['student_pins'] if REQUIRE_PIN else {}})
+    reference_text=c.execute('SELECT value FROM settings WHERE key="reference_text"').fetchone()['value']
+    reference_version=int(c.execute('SELECT value FROM settings WHERE key="reference_version"').fetchone()['value'])
+   return self.json_response(200,{'students':items,'criteria':criteria,'criteria_version':version,'reference_text':reference_text,'reference_version':reference_version,'mode':('demo' if DEMO_MODE else ('api' if KEY else 'no-key')),'requiresPin':REQUIRE_PIN,'student_pins':PRIV['student_pins'] if REQUIRE_PIN else {}})
   if path=='/api/teacher/export':
    self.auth('teacher')
    with db() as c:items=[get_student(c,n) for n in NUMS]
@@ -307,7 +312,8 @@ class Handler(SimpleHTTPRequestHandler):
      first,second=s['first'],s['second']
      criteria=json.loads(c.execute('SELECT value FROM settings WHERE key="criteria"').fetchone()['value'])
      version=int(c.execute('SELECT value FROM settings WHERE key="criteria_version"').fetchone()['value'])
-    cards,excluded=classify_demo(first,second) if DEMO_MODE else classify_openai(first,second,criteria)
+     reference_text=c.execute('SELECT value FROM settings WHERE key="reference_text"').fetchone()['value']
+    cards,excluded=classify_demo(first,second) if DEMO_MODE else classify_openai(first,second,criteria,reference_text)
     with LOCK,db() as c:
      cur=get_student(c,n)
      if cur['phase']!=1:return self.json_response(200,{'student':cur})
@@ -336,11 +342,21 @@ class Handler(SimpleHTTPRequestHandler):
    self.auth('teacher')
    if path=='/api/teacher/test-ai':
     if DEMO_MODE:raise ApiError(400,'현재 시험 모드입니다. DEMO_MODE=0을 설정한 후 시험해 주세요.')
-    with db() as c:criteria=json.loads(c.execute('SELECT value FROM settings WHERE key="criteria"').fetchone()['value'])
+    with db() as c:
+     criteria=json.loads(c.execute('SELECT value FROM settings WHERE key="criteria"').fetchone()['value'])
+     reference_text=c.execute('SELECT value FROM settings WHERE key="reference_text"').fetchone()['value']
     test_first=['무지개 물고기는 왜 행복해졌을까?']+['']*(len(PASSAGE)-1)
     test_second=['내가 무지개 물고기라면 비늘을 나누어 주었을까?']+['']*(len(PASSAGE)-1)
-    cards,excluded=classify_openai(test_first,test_second,criteria)
+    cards,excluded=classify_openai(test_first,test_second,criteria,reference_text)
     return self.json_response(200,{'ok':True,'count':len(cards),'categories':[c['category'] for c in cards]})
+   if path=='/api/teacher/reference':
+    reference_text=body.get('reference_text')
+    if not isinstance(reference_text,str) or not reference_text.strip() or len(reference_text)>40000:
+     raise ApiError(400,'참고 본문은 빈칸 없이 40,000자 이내로 입력해 주세요.')
+    with LOCK,db() as c:
+     c.execute('UPDATE settings SET value=? WHERE key="reference_text"',(reference_text.strip(),))
+     c.execute('UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key="reference_version"')
+    return self.json_response(200,{'ok':True})
    if path=='/api/teacher/criteria':
     criteria=body.get('criteria')
     if not isinstance(criteria,dict) or any(not isinstance(criteria.get(k),str) or not criteria[k].strip() or len(criteria[k])>3000 for k in DEFAULT_CRITERIA):raise ApiError(400,'세 가지 분류 기준과 추가 지침을 모두 입력해 주세요.')
