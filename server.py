@@ -16,7 +16,8 @@ DATA=Path(os.getenv('DATA_DIR',str(ROOT/'runtime_data'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 PASSAGE=json.loads((BUNDLED_DATA/'passage.json').read_text(encoding='utf-8'))['passages']
 DEFAULT_REFERENCE_TEXT='\n\n'.join(PASSAGE)
-NUMS=[1]+list(range(3,18))
+NUMS=[1]+list(range(3,18))  # 16 real students; no extra practice account
+LOGIN_NUMS=NUMS
 DB_PATH=DATA/'classroom.sqlite3'
 PRIVATE_PATH=DATA/'settings.private.json'
 API_MODEL=os.getenv('OPENAI_MODEL','gpt-4o-mini')
@@ -40,7 +41,9 @@ def dumps(x):return json.dumps(x,ensure_ascii=False,separators=(',',':'))
 def read_json(s):return json.loads(s) if s else None
 
 def private():
- if PRIVATE_PATH.exists():return json.loads(PRIVATE_PATH.read_text('utf-8'))
+ if PRIVATE_PATH.exists():
+  settings=json.loads(PRIVATE_PATH.read_text('utf-8'))
+  return settings
  settings={'secret':secrets.token_urlsafe(48),'admin_password':secrets.token_urlsafe(14),
            'student_pins':{str(n):str(secrets.randbelow(900000)+100000) for n in NUMS}}
  PRIVATE_PATH.write_text(json.dumps(settings,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -68,6 +71,7 @@ def initialize():
    c.execute("ALTER TABLE student ADD COLUMN original_annotations TEXT NOT NULL DEFAULT '[]'")
   if 'annotations' not in columns:
    c.execute("ALTER TABLE student ADD COLUMN annotations TEXT NOT NULL DEFAULT '[]'")
+  c.execute('CREATE TABLE IF NOT EXISTS teacher_trial_snapshot (number INTEGER PRIMARY KEY, record TEXT NOT NULL, saved_at TEXT NOT NULL)')
   c.execute('CREATE TABLE IF NOT EXISTS import_batch (id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT NOT NULL, imported_at TEXT NOT NULL, student_numbers TEXT NOT NULL, sha256 TEXT NOT NULL, file_bytes INTEGER NOT NULL DEFAULT 0)')
   c.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
   c.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',('criteria',dumps(DEFAULT_CRITERIA)))
@@ -77,6 +81,31 @@ def initialize():
   for n in NUMS:
    arr=dumps(['']*len(PASSAGE));c.execute('INSERT OR IGNORE INTO student(number,original_first,original_second,first,second,updated_at) VALUES (?,?,?,?,?,?)',(n,arr,arr,arr,arr,utcnow()))
 initialize()
+
+def store_teacher_trial_snapshot(c,n):
+ # Teacher-only explicit checkpoint. Preserve all fields exactly, including edited
+ # first/second records, photo marks, cards, original import provenance and timestamps.
+ if n not in NUMS:raise ApiError(400,'실제 학생 번호를 선택해 주세요.')
+ if c.execute('SELECT 1 FROM teacher_trial_snapshot WHERE number=?',(n,)).fetchone():
+  raise ApiError(409,'이 학생의 시험 전 백업이 이미 있어요. 먼저 복원해 주세요.')
+ row=c.execute('SELECT * FROM student WHERE number=?',(n,)).fetchone()
+ if not row or row['phase']!=1:
+  raise ApiError(409,'시험 전 백업은 1단계 상태에서만 만들 수 있어요. 이미 진행한 학생의 기록은 건드리지 않았어요.')
+ c.execute('INSERT INTO teacher_trial_snapshot(number,record,saved_at) VALUES (?,?,?)',(n,dumps(dict(row)),utcnow()))
+
+def restore_teacher_trial_snapshot(c,n):
+ if n not in NUMS:raise ApiError(400,'실제 학생 번호를 선택해 주세요.')
+ snap=c.execute('SELECT record FROM teacher_trial_snapshot WHERE number=?',(n,)).fetchone()
+ if not snap:raise ApiError(409,'시험 전 백업이 없어요. 기존 학생 기록을 보호하기 위해 초기화하지 않았어요.')
+ row=read_json(snap['record'])
+ current=c.execute('SELECT * FROM student WHERE number=?',(n,)).fetchone()
+ if not current:raise ApiError(404,'학생 자료가 없어요.')
+ cols=[key for key in row if key not in ('number','revision')]
+ # Revision MUST increase so a stale student browser cannot replay trial edits.
+ values=[row[k] for k in cols]
+ values.extend([current['revision']+1,n])
+ c.execute(f'UPDATE student SET {", ".join(k+"=?" for k in cols)}, revision=? WHERE number=?',values)
+ c.execute('DELETE FROM teacher_trial_snapshot WHERE number=?',(n,))
 
 def get_student(c,n):
  row=c.execute('SELECT * FROM student WHERE number=?',(n,)).fetchone()
@@ -336,7 +365,7 @@ class Handler(SimpleHTTPRequestHandler):
  def do_POST(self):return self.execute(self.post_request)
  def get_request(self):
   path=urlsplit(self.path).path
-  if path=='/api/config':return self.json_response(200,{'numbers':NUMS,'passages':PASSAGE,'demo':DEMO_MODE,'requiresPin':REQUIRE_PIN,'rows':len(PASSAGE)})
+  if path=='/api/config':return self.json_response(200,{'numbers':LOGIN_NUMS,'passages':PASSAGE,'demo':DEMO_MODE,'requiresPin':REQUIRE_PIN,'rows':len(PASSAGE)})
   if path=='/api/student/me':
    number=self.auth('student')['number']
    with db() as c:s=get_student(c,number)
@@ -350,7 +379,8 @@ class Handler(SimpleHTTPRequestHandler):
     reference_text=c.execute('SELECT value FROM settings WHERE key="reference_text"').fetchone()['value']
     reference_version=int(c.execute('SELECT value FROM settings WHERE key="reference_version"').fetchone()['value'])
     imports=import_listing(c)
-   return self.json_response(200,{'students':items,'imports':imports,'criteria':criteria,'criteria_version':version,'reference_text':reference_text,'reference_version':reference_version,'mode':('demo' if DEMO_MODE else ('api' if KEY else 'no-key')),'requiresPin':REQUIRE_PIN,'student_pins':PRIV['student_pins'] if REQUIRE_PIN else {}})
+    trial_snapshots=[{'number':r['number'],'saved_at':r['saved_at']} for r in c.execute('SELECT number,saved_at FROM teacher_trial_snapshot')]
+   return self.json_response(200,{'students':items,'trial_snapshots':trial_snapshots,'imports':imports,'criteria':criteria,'criteria_version':version,'reference_text':reference_text,'reference_version':reference_version,'mode':('demo' if DEMO_MODE else ('api' if KEY else 'no-key')),'requiresPin':REQUIRE_PIN,'student_pins':PRIV['student_pins'] if REQUIRE_PIN else {}})
   if path=='/api/teacher/export':
    self.auth('teacher')
    with db() as c:items=[get_student(c,n) for n in NUMS]
@@ -368,9 +398,10 @@ class Handler(SimpleHTTPRequestHandler):
   body=self.incoming()
   if path=='/api/student/login':
    n=body.get('number')
-   if type(n)!=int or n not in NUMS:raise ApiError(400,'학생 번호를 선택해 주세요.')
+   if type(n)!=int or n not in LOGIN_NUMS:raise ApiError(400,'번호를 선택해 주세요.')
    login_check(self.client_address[0],'student')
-   if REQUIRE_PIN and str(body.get('pin',''))!=PRIV['student_pins'][str(n)]:
+   expected_pin=PRIV['student_pins'][str(n)]
+   if REQUIRE_PIN and str(body.get('pin',''))!=expected_pin:
     login_failed(self.client_address[0],'student')
     raise ApiError(403,'접속 코드가 일치하지 않습니다.')
    return self.json_response(200,{'token':sign_token('student',n),'number':n})
@@ -427,6 +458,21 @@ class Handler(SimpleHTTPRequestHandler):
     return self.json_response(200,{'student':s})
   if path.startswith('/api/teacher/'):
    self.auth('teacher')
+   if path=='/api/teacher/save-trial':
+    n=body.get('number')
+    if type(n)!=int or n not in NUMS or body.get('confirm') is not True:
+     raise ApiError(400,'학생 번호와 시험 시작 확인을 확인해 주세요.')
+    with LOCK,db() as c:
+     store_teacher_trial_snapshot(c,n)
+    return self.json_response(200,{'ok':True,'number':n})
+   if path=='/api/teacher/restore-trial':
+    n=body.get('number')
+    if type(n)!=int or n not in NUMS or body.get('confirm_number')!=str(n):
+     raise ApiError(400,'복원할 학생 번호를 정확히 입력해 주세요.')
+    with LOCK,db() as c:
+     restore_teacher_trial_snapshot(c,n)
+     restored=get_student(c,n)
+    return self.json_response(200,{'ok':True,'number':n,'phase':restored['phase']})
    if path=='/api/teacher/preview-classification':
     n=body.get('number')
     if type(n)!=int or n not in NUMS:raise ApiError(400,'미리 볼 학생 번호를 선택해 주세요.')
