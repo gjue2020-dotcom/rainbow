@@ -60,6 +60,11 @@ def db():
 def initialize():
  with db() as c:
   c.execute('CREATE TABLE IF NOT EXISTS student (number INTEGER PRIMARY KEY, phase INTEGER NOT NULL DEFAULT 1, original_first TEXT NOT NULL, original_second TEXT NOT NULL, first TEXT NOT NULL, second TEXT NOT NULL, initial_cards TEXT NOT NULL DEFAULT "[]", cards TEXT NOT NULL DEFAULT "[]", excluded TEXT NOT NULL DEFAULT "[]", criteria_version INTEGER, updated_at TEXT, stage1_at TEXT, submitted_at TEXT, revision INTEGER NOT NULL DEFAULT 0)')
+  # Older deployed databases lack import provenance. Do not reset or alter those records.
+  columns={r['name'] for r in c.execute('PRAGMA table_info(student)')}
+  if 'current_import_id' not in columns:
+   c.execute('ALTER TABLE student ADD COLUMN current_import_id INTEGER')
+  c.execute('CREATE TABLE IF NOT EXISTS import_batch (id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT NOT NULL, imported_at TEXT NOT NULL, student_numbers TEXT NOT NULL, sha256 TEXT NOT NULL, file_bytes INTEGER NOT NULL DEFAULT 0)')
   c.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
   c.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',('criteria',dumps(DEFAULT_CRITERIA)))
   c.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',('criteria_version','1'))
@@ -75,6 +80,32 @@ def get_student(c,n):
  out=dict(row)
  for k in ['original_first','original_second','first','second','initial_cards','cards','excluded']:out[k]=read_json(out[k])
  return out
+
+def is_imported_record(s):
+ return any(x.strip() for x in s['original_first']+s['original_second'])
+
+def import_listing(c):
+ # The existing app never stored uploaded filenames. Present older data honestly.
+ students={n:get_student(c,n) for n in NUMS}
+ batches=[]
+ for b in c.execute('SELECT id,filename,imported_at,student_numbers FROM import_batch ORDER BY id DESC'):
+  original=[int(n) for n in read_json(b['student_numbers'])]
+  active=[n for n in original if students[n]['current_import_id']==b['id']]
+  blocked=[n for n in active if students[n]['phase']!=1 or students[n]['first']!=students[n]['original_first'] or students[n]['second']!=students[n]['original_second']]
+  batches.append({'id':b['id'],'filename':b['filename'],'imported_at':b['imported_at'],'numbers':original,'active_numbers':active,'blocked_numbers':blocked,'can_delete':not blocked})
+ legacy=[n for n,s in students.items() if s['current_import_id'] is None and is_imported_record(s)]
+ blocked=[n for n in legacy if students[n]['phase']!=1 or students[n]['first']!=students[n]['original_first'] or students[n]['second']!=students[n]['original_second']]
+ if legacy:
+  batches.append({'id':'legacy','filename':'기존 등록 자료 (파일명 확인 불가)','imported_at':None,'numbers':legacy,'active_numbers':legacy,'blocked_numbers':blocked,'can_delete':not blocked})
+ return batches
+
+def clear_imported_students(c,numbers):
+ blank=dumps(['']*len(PASSAGE))
+ now=utcnow()
+ for n in numbers:
+  c.execute('UPDATE student SET original_first=?,original_second=?,first=?,second=?,initial_cards="[]",cards="[]",excluded="[]",current_import_id=NULL,updated_at=?,revision=revision+1 WHERE number=?',
+   (blank,blank,blank,blank,now,n))
+
 
 def sign_token(kind,number=0):
  payload=dumps({'kind':kind,'number':number,'exp':int(time.time())+60*60*24*7}).encode()
@@ -264,7 +295,8 @@ class Handler(SimpleHTTPRequestHandler):
     version=int(c.execute('SELECT value FROM settings WHERE key="criteria_version"').fetchone()['value'])
     reference_text=c.execute('SELECT value FROM settings WHERE key="reference_text"').fetchone()['value']
     reference_version=int(c.execute('SELECT value FROM settings WHERE key="reference_version"').fetchone()['value'])
-   return self.json_response(200,{'students':items,'criteria':criteria,'criteria_version':version,'reference_text':reference_text,'reference_version':reference_version,'mode':('demo' if DEMO_MODE else ('api' if KEY else 'no-key')),'requiresPin':REQUIRE_PIN,'student_pins':PRIV['student_pins'] if REQUIRE_PIN else {}})
+    imports=import_listing(c)
+   return self.json_response(200,{'students':items,'imports':imports,'criteria':criteria,'criteria_version':version,'reference_text':reference_text,'reference_version':reference_version,'mode':('demo' if DEMO_MODE else ('api' if KEY else 'no-key')),'requiresPin':REQUIRE_PIN,'student_pins':PRIV['student_pins'] if REQUIRE_PIN else {}})
   if path=='/api/teacher/export':
    self.auth('teacher')
    with db() as c:items=[get_student(c,n) for n in NUMS]
@@ -364,6 +396,24 @@ class Handler(SimpleHTTPRequestHandler):
      c.execute('UPDATE settings SET value=? WHERE key="criteria"',(dumps({k:criteria[k] for k in DEFAULT_CRITERIA}),))
      c.execute('UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key="criteria_version"')
     return self.json_response(200,{'ok':True})
+   if path=='/api/teacher/delete-import':
+    if body.get('confirm') is not True:raise ApiError(400,'삭제 확인이 필요합니다.')
+    batch_id=body.get('id')
+    if batch_id!='legacy' and (type(batch_id)!=int or batch_id<1):raise ApiError(400,'삭제할 등록 내역을 확인해 주세요.')
+    with LOCK,db() as c:
+     rows=import_listing(c)
+     target=next((r for r in rows if r['id']==batch_id),None)
+     if not target:raise ApiError(404,'등록 내역을 찾을 수 없어요. 새로고침해 주세요.')
+     if not target['can_delete']:
+      raise ApiError(409,'학생 '+', '.join(map(str,target['blocked_numbers']))+'번이 이미 기록을 수정했거나 다음 단계에 진입했어요. 해당 자료는 삭제하지 않았어요.')
+     nums=target['active_numbers']
+     if batch_id=='legacy':
+      # Previous app versions only stored the extracted text, not a source file name.
+      clear_imported_students(c,nums)
+     else:
+      clear_imported_students(c,nums)
+      c.execute('DELETE FROM import_batch WHERE id=?',(batch_id,))
+    return self.json_response(200,{'ok':True,'cleared':nums})
    if path=='/api/teacher/import':
     students=body.get('students')
     if not isinstance(students,dict):raise ApiError(400,'students 항목을 확인해 주세요.')
@@ -372,14 +422,24 @@ class Handler(SimpleHTTPRequestHandler):
      if not str(number).isdigit() or int(number) not in NUMS:raise ApiError(400,f'학생 번호 {number}는 사용할 수 없어요.')
      first,second=validate_rows(payload);staged.append((int(number),first,second))
     if not staged:raise ApiError(400,'학생 자료가 비어 있어요.')
+    raw_filename=body.get('source_filename','등록된 학생 자료.json')
+    if not isinstance(raw_filename,str):raise ApiError(400,'파일 이름이 올바르지 않아요.')
+    filename=''.join(x for x in raw_filename.replace('\\','/').split('/')[-1] if x.isprintable()).strip()[:180] or '등록된 학생 자료.json'
+    # Provenance is recorded for future uploads; the original JSON bytes are not saved.
+    digest=hashlib.sha256(dumps(students).encode('utf-8')).hexdigest()
+    file_bytes=len(dumps(students).encode('utf-8'))
     with LOCK,db() as c:
      for n,first,second in staged:
       s=get_student(c,n)
       if s['phase']!=1:raise ApiError(409,f'{n}번은 이미 2단계 이상 진행해 덮어쓸 수 없어요.')
       if s['first']!=s['original_first'] or s['second']!=s['original_second']:
        raise ApiError(409,f'{n}번은 학생이 수정을 시작했어요. 덮어쓰지 않았어요.')
+     cur=c.execute('INSERT INTO import_batch(filename,imported_at,student_numbers,sha256,file_bytes) VALUES(?,?,?,?,?)',
+       (filename,utcnow(),dumps([n for n,_,_ in staged]),digest,file_bytes))
+     import_id=cur.lastrowid
      for n,first,second in staged:
-      c.execute('UPDATE student SET original_first=?,original_second=?,first=?,second=?,updated_at=?,revision=revision+1 WHERE number=?',(dumps(first),dumps(second),dumps(first),dumps(second),utcnow(),n))
+      c.execute('UPDATE student SET original_first=?,original_second=?,first=?,second=?,current_import_id=?,updated_at=?,revision=revision+1 WHERE number=?',
+       (dumps(first),dumps(second),dumps(first),dumps(second),import_id,utcnow(),n))
     return self.json_response(200,{'ok':True,'updated':[x[0] for x in staged]})
   raise ApiError(404,'요청한 기능이 없습니다.')
 
