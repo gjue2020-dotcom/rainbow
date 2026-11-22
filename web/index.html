@@ -77,7 +77,20 @@ button:focus-visible,.student-select:focus-visible{outline:3px solid #76b6c8;out
 .excluded-meta{font-size:12px;color:#77786e;line-height:1.5}
 .excluded-text{font-size:15px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;font-weight:700;color:#3f5556}
 .excluded-restore-btn{padding:8px 13px;font-size:12px}
+.question-edit-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:14px}
+.question-edit-actions button{font-size:14px;padding:11px 18px;border-radius:11px;font-weight:800}
+.question-edit-actions .danger{background:#fff8f6;color:#a35c57;border:1px solid #ebc5c2}
+.modal .danger-btn{background:#b45a56;color:white;border:0;border-radius:11px;padding:11px 18px;font-weight:800}
+.question-edit-actions .secondary{background:#fff;border:1px solid #ddd9ce;color:#54676b}
+.question-edit-actions .primary{background:#577f7a;color:white;border:1px solid #577f7a}
+.modal .editor-note{font-size:12px;color:#7b817b;margin-top:7px;line-height:1.5}
 @media(max-width:650px){.question-toolbar{gap:4px}.question-toolbar .add-btn{font-size:10px;padding:7px 8px}}
+/* Tablet landscape: keep the three question types side-by-side while giving each note readable width. */
+@media (min-width:651px) and (max-width:1100px){
+ .board{grid-template-columns:repeat(3,minmax(0,1fr))}
+ .notes{grid-template-columns:minmax(0,1fr)}
+ .note{width:100%;max-width:225px;justify-self:center}
+}
 </style>
 </head>
 <body>
@@ -85,24 +98,21 @@ button:focus-visible,.student-select:focus-visible{outline:3px solid #76b6c8;out
 <script>
 (()=>{
 'use strict';
-// Teacher sandbox: no student login, no student API writes, no browser backups.
-const teacherSandbox=new URLSearchParams(location.search).get('teacher_preview')==='1' && window.parent!==window;
-
-let pendingSandbox=null;
 const CATS=[{key:'vivid',label:'생생질문'},{key:'deep',label:'곰곰질문'},{key:'if',label:'라면질문'}];
-let numbers=[],rows=[],config={},student=null,token=teacherSandbox?'':(sessionStorage.getItem('rf-student-token')||''),state=null,modal=null,drag=null,floating=null,completeTab='questions';
+let numbers=[],rows=[],config={},student=null,token=sessionStorage.getItem('rf-student-token')||'',state=null,modal=null,drag=null,floating=null,completeTab='questions';
 let chosen=null,dirty=false,saveTimer=null,savingPromise=null;
+const PRACTICE_NUMBER=18;
  let chosenPassageRange=null;
 const $=s=>document.querySelector(s),app=$('#app');
 function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]))}
 function asState(s){return {stage:s.phase,first:s.first,second:s.second,originalFirst:s.original_first,originalSecond:s.original_second,originalAnnotations:s.original_annotations||[],annotations:s.annotations||[],initialCards:s.initial_cards,cards:s.cards,excluded:s.excluded,submittedAt:s.submitted_at,completedAt:s.stage1_at,revision:s.revision}}
-async function api(path,data,auth=token){if(teacherSandbox&&path.startsWith('/api/student/'))throw Error('교사 체험 화면은 학생 정보를 저장하거나 변경할 수 없어요.');let res=await fetch(path,{method:data===undefined?'GET':'POST',headers:{...(data!==undefined?{'Content-Type':'application/json'}:{}),...(auth?{'Authorization':'Bearer '+auth}:{})},...(data===undefined?{}:{body:JSON.stringify(data)}),cache:'no-store'});let obj=await res.json().catch(()=>({}));if(!res.ok)throw Error(obj.error||'서버에 연결하지 못했어요.');return obj}
+async function api(path,data,auth=token){let res=await fetch(path,{method:data===undefined?'GET':'POST',headers:{...(data!==undefined?{'Content-Type':'application/json'}:{}),...(auth?{'Authorization':'Bearer '+auth}:{})},...(data===undefined?{}:{body:JSON.stringify(data)}),cache:'no-store'});let obj=await res.json().catch(()=>({}));if(!res.ok)throw Error(obj.error||'서버에 연결하지 못했어요.');return obj}
 function markStatus(message,error=false){let el=$('#saveStatus')||$('#networkStatus');if(el){el.textContent=message;el.classList.toggle('error',error)}}
 function backupKey(){return 'rf-pending-'+student}
 function restorePending(server){try{let b=JSON.parse(localStorage.getItem(backupKey())||'null');if(b&&b.version===server.revision&&b.stage===server.phase&&b.stage!==3){if(b.stage===1){state.first=b.first;state.second=b.second;if(Array.isArray(b.annotations))state.annotations=b.annotations}else if(b.stage===2){state.cards=b.cards}dirty=true;setTimeout(()=>flushSave().catch(()=>{}),400)}}catch(e){}}
-function save(){if(teacherSandbox)return;if(!state||state.stage===3)return;dirty=true;try{localStorage.setItem(backupKey(),JSON.stringify({version:state.revision,stage:state.stage,first:state.first,second:state.second,annotations:state.annotations,cards:state.cards}))}catch(e){}
+function save(){if(!state||state.stage===3)return;dirty=true;try{localStorage.setItem(backupKey(),JSON.stringify({version:state.revision,stage:state.stage,first:state.first,second:state.second,annotations:state.annotations,cards:state.cards}))}catch(e){}
   markStatus('자동 저장 중…');clearTimeout(saveTimer);saveTimer=setTimeout(()=>flushSave().catch(()=>{}),500)}
-async function flushSave(){if(teacherSandbox)return;clearTimeout(saveTimer);if(savingPromise){try{await savingPromise}catch(e){};}
+async function flushSave(){clearTimeout(saveTimer);if(savingPromise){try{await savingPromise}catch(e){};}
  if(!dirty||!state||state.stage===3)return;
  dirty=false;let sentStage=state.stage;
  const payload=sentStage===1?{revision:state.revision,first:[...state.first],second:[...state.second],annotations:JSON.parse(JSON.stringify(state.annotations))}:{revision:state.revision,cards:JSON.parse(JSON.stringify(state.cards))};
@@ -114,16 +124,15 @@ async function flushSave(){if(teacherSandbox)return;clearTimeout(saveTimer);if(s
 }
 function busy(msg){let div=document.createElement('div');div.className='busy-overlay';div.id='busy';div.innerHTML='<div class="busy-box"><div class="small-loader"></div><div>'+escapeHtml(msg)+'</div><small>화면을 닫지 말아 주세요.</small></div>';document.body.appendChild(div)}
 function unbusy(){document.getElementById('busy')?.remove()}
-function top(){return `<div class="topbar"><div class="brand"><span class="brand-mark">${brandSvg()}</span><span>작은 질문, 깊은 생각</span></div><div class="right-tools"><span class="prototype-pill">${teacherSandbox?'교사용 체험 · 저장 안 됨':config.demo?'분류 기능 시험 모드':'무지개 물고기 질문 정리'}</span><span class="select-box" aria-label="현재 학생 번호">${student+'번 학생'}</span><button id="exitBtn" class="ghost-btn" type="button">나가기</button></div></div>`}
-function renderLogin(){app.className='ocean';app.innerHTML=`<div class="shell"><div class="topbar"><div class="brand"><span class="brand-mark">${brandSvg()}</span>작은 질문, 깊은 생각</div><div class="right-tools"><span class="prototype-pill">학생용</span></div></div><section class="login-wrap"><div class="login-top">${fishSvg()}<div><h1>무지개 물고기 질문 여행</h1><p>자신의 번호를 선택하고 시작해 주세요.</p></div></div><div class="student-grid">${numbers.map(n=>`<button class="student-select ${chosen===n?'active':''}" data-n="${n}" aria-label="${n+'번'}">${n}</button>`).join('')}</div><div class="login-foot"><div>${config.requiresPin?'<label>접속 코드 <input class="pin-input" id="pinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="6자리"/></label>':'<span class="login-disclaimer">번호를 확인하고 입장하세요.</span>'}</div><button class="primary" id="enterBtn" ${chosen?'':'disabled'}>${chosen?chosen+'번으로 시작하기':'번호를 선택해 주세요'} →</button></div><div id="networkStatus" class="status-message"></div></section></div>`;
+function top(){return `<div class="topbar"><div class="brand"><span class="brand-mark">${brandSvg()}</span><span>작은 질문, 깊은 생각</span></div><div class="right-tools"><span class="prototype-pill">${config.demo?'분류 기능 시험 모드':'무지개 물고기 질문 정리'}</span><span class="select-box" aria-label="현재 학생 번호">${student===PRACTICE_NUMBER?'교사 · 연습용':student+'번 학생'}</span><button id="exitBtn" class="ghost-btn" type="button">나가기</button></div></div>`}
+function renderLogin(){app.className='ocean';app.innerHTML=`<div class="shell"><div class="topbar"><div class="brand"><span class="brand-mark">${brandSvg()}</span>작은 질문, 깊은 생각</div><div class="right-tools"><span class="prototype-pill">학생용</span></div></div><section class="login-wrap"><div class="login-top">${fishSvg()}<div><h1>무지개 물고기 질문 여행</h1><p>자신의 번호를 선택하고 시작해 주세요.</p></div></div><div class="student-grid">${numbers.map(n=>`<button class="student-select ${chosen===n?'active':''}" data-n="${n}" aria-label="${n===PRACTICE_NUMBER?'교사 연습용 계정':n+'번'}">${n===PRACTICE_NUMBER?'교사 (연습용)':n}</button>`).join('')}</div><div class="login-foot"><div>${config.requiresPin?'<label>접속 코드 <input class="pin-input" id="pinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="6자리"/></label>':'<span class="login-disclaimer">번호를 확인하고 입장하세요.</span>'}</div><button class="primary" id="enterBtn" ${chosen?'':'disabled'}>${chosen?(chosen===PRACTICE_NUMBER?'교사 연습 시작하기':chosen+'번으로 시작하기'):'번호를 선택해 주세요'} →</button></div><div id="networkStatus" class="status-message"></div></section></div>`;
  app.querySelectorAll('[data-n]').forEach(el=>el.onclick=()=>{chosen=Number(el.dataset.n);renderLogin()});$('#enterBtn').onclick=async()=>{if(!chosen)return;try{markStatus('입장 중…');let info=await api('/api/student/login',{number:chosen,pin:$('#pinInput')?.value||''},'');token=info.token;sessionStorage.setItem('rf-student-token',token);student=chosen;await loadStudent()}catch(e){markStatus(e.message,true)}}}
 async function loadStudent(){let x=await api('/api/student/me');student=x.student.number;state=asState(x.student);restorePending(x.student);render()}
-function bindTop(){
- $('#exitBtn').onclick=async()=>{if(teacherSandbox){window.parent.postMessage({type:'rf-sandbox-close'},location.origin);return;}try{await flushSave()}catch(e){alert('자동 저장에 실패했어요. 인터넷을 확인하고 다시 시도해 주세요.');return}token='';sessionStorage.removeItem('rf-student-token');student=null;state=null;chosen=null;renderLogin()}}
-function render(){if(!state)return renderLogin();app.className=state.stage===1?'ocean':'paper';app.innerHTML=`<div class="shell">${top()}${state.stage===3?completeView():heading(state.stage)}${state.stage===1?recordView():state.stage===2?sortView():''}<div class="demo-warning">${teacherSandbox?'교사용 미리보기입니다. 질문 이동·추가·제출을 시험해도 실제 학생 자료에는 저장되지 않습니다.':config.demo?'현재 AI 질문 분류는 시험용 규칙으로 실행됩니다. 실제 수업에는 API 연결이 필요해요.':'내 기록은 자동 저장됩니다. 제출하면 결과만 확인할 수 있어요.'}</div></div>`;bindTop();if(state.stage===1)bindRecord();if(state.stage===2)bindSort();if(state.stage===3)bindComplete()}
+function bindTop(){$('#exitBtn').onclick=async()=>{try{await flushSave()}catch(e){alert('자동 저장에 실패했어요. 인터넷을 확인하고 다시 시도해 주세요.');return}token='';sessionStorage.removeItem('rf-student-token');student=null;state=null;chosen=null;renderLogin()}}
+function render(){if(!state)return renderLogin();app.className=state.stage===1?'ocean':'paper';app.innerHTML=`<div class="shell">${top()}${state.stage===3?completeView():heading(state.stage)}${state.stage===1?recordView():state.stage===2?sortView():''}<div class="demo-warning">${student===PRACTICE_NUMBER?'교사 연습용 계정입니다. 가상 기록으로 AI 분류를 시험하며 실제 학생 16명의 기록·통계에 반영되지 않아요. 제출하면 수정할 수 없어요.':config.demo?'현재 AI 질문 분류는 시험용 규칙으로 실행됩니다. 실제 수업에는 API 연결이 필요해요.':'내 기록은 자동 저장됩니다. 제출하면 결과만 확인할 수 있어요.'}</div></div>`;bindTop();if(state.stage===1)bindRecord();if(state.stage===2)bindSort();if(state.stage===3)bindComplete()}
 function fishSvg(){return `<svg class="fish-illustration" viewBox="0 0 175 120" aria-hidden="true"><g stroke="#466e7a" stroke-linecap="round" stroke-linejoin="round" stroke-width="3.5"><path d="M44 57 C25 39 18 38 11 31 C13 52 21 58 14 80 C35 77 42 72 47 66" fill="#f7bd87"/><path d="M41 63 Q55 15 108 25 Q143 38 149 58 Q151 87 106 98 Q59 96 41 63Z" fill="#fbd0a4"/><path d="M89 24 Q78 9 74 17 L70 29" fill="#aed6c3"/><path d="M89 91 L102 109 L111 96" fill="#afd5c2"/><path d="M58 43 Q70 50 61 57 Q53 58 53 52" fill="#a6d7d4" stroke-width="2.5"/><path d="M85 39 Q95 48 89 55 Q80 52 80 46" fill="#a8ccd9" stroke-width="2.5"/><path d="M65 65 Q78 70 67 80" fill="#f5e89e" stroke-width="2.5"/><path d="M93 62 Q105 69 96 79" fill="#bcdcc4" stroke-width="2.5"/><path d="M117 44 C123 37 131 40 134 45" fill="none" stroke-width="2.6"/><path d="M130 59 Q123 66 116 60" fill="none" stroke-width="2.5"/><circle cx="121" cy="47" r="3.8" fill="#3f5661" stroke-width="1"/><path d="M52 48 Q46 58 50 72" fill="none" stroke-width="2" opacity=".6"/></g><circle cx="165" cy="22" r="6" fill="none" stroke="#95c6d1" stroke-width="3"/><circle cx="151" cy="10" r="3.5" fill="none" stroke="#95c6d1" stroke-width="2"/></svg>`}
 function brandSvg(){return `<svg viewBox="0 0 40 40" aria-hidden="true"><path d="M12 20 L3 11 L4 30 L13 24 Q24 38 35 21 Q30 4 13 17Z" fill="#f6c49e" stroke="#567c85" stroke-width="2.2" stroke-linejoin="round"/><circle cx="29" cy="18" r="2" fill="#365965"/><path d="M17 17 Q13 23 18 27 M22 14 Q20 21 23 26" fill="none" stroke="#8dbfc0" stroke-width="2" stroke-linecap="round"/></svg>`}
-function heading(step){const one=step===1;return `<div class="heading"><div class="title-cluster"><p class="eyebrow">${one?'STEP 01 · 자세히 읽기':'STEP 02 · 질문 분류'}</p><h1>${one?'내 기록을 다시 살펴봐요':'질문을 알맞은 칸으로 옮겨요'}</h1><p class="desc">${one?'AI가 정리한 내용과 종이 활동지를 비교하고, 잘못된 부분을 직접 고쳐 보세요.':'AI가 분류한 질문을 살펴보고, 다르게 생각하는 질문을 옮기거나 추가해 보세요.'}</p></div><div class="heading-art">${one?`${fishSvg()}<span class="bubble one"></span><span class="bubble two"></span><span class="bubble three"></span>`:''}<div class="stepper" aria-label="${step}단계 중 2단계"><span>1단계</span><i class="${step>=1?'active':''}"></i><i class="${step>=2?'active':''}"></i><span>2단계</span></div></div></div>`}
+function heading(step){const one=step===1;return `<div class="heading"><div class="title-cluster"><p class="eyebrow">${one?'STEP 01 · 자세히 읽기':'STEP 02 · 질문 분류'}</p><h1>${one?'내 기록을 다시 살펴봐요':'질문을 알맞은 칸으로 옮겨요'}</h1><p class="desc">${one?'AI가 정리한 내용과 종이 활동지를 비교하고, 잘못된 부분을 직접 고쳐 보세요.':'AI가 분류한 질문을 확인하고, 잘못된 질문은 고치거나 삭제하고, 필요한 질문은 추가해 보세요.'}</p></div><div class="heading-art">${one?`${fishSvg()}<span class="bubble one"></span><span class="bubble two"></span><span class="bubble three"></span>`:''}<div class="stepper" aria-label="${step}단계 중 2단계"><span>1단계</span><i class="${step>=1?'active':''}"></i><i class="${step>=2?'active':''}"></i><span>2단계</span></div></div></div>`}
 function markedPassage(text,row){
  const marks=(state.annotations||[]).filter(m=>m.row===row&&m.start>=0&&m.end<=text.length);
  const cuts=new Set([0,text.length]);for(const m of marks){cuts.add(m.start);cuts.add(m.end)}
@@ -175,12 +184,50 @@ function recordView(){return `<section class="panel" aria-label="자세히 읽�
 function bindRecord(){chosenPassageRange=null;document.querySelectorAll('.passage-content').forEach(el=>{el.addEventListener('pointerup',()=>setTimeout(()=>{const r=capturePassageRange();if(r){chosenPassageRange=r;$('#selectionHelp').textContent='선택됨: '+rows[r.row].slice(r.start,r.end).slice(0,16)}},0));el.addEventListener('keyup',()=>{const r=capturePassageRange();if(r)chosenPassageRange=r})});document.querySelectorAll('[data-ink]').forEach(b=>{b.addEventListener('pointerdown',e=>{const r=capturePassageRange();if(r)chosenPassageRange=r;/* preserve selection captured on pointerdown */});b.addEventListener('click',()=>applyPassageMark(b.dataset.ink))});document.querySelectorAll('textarea[data-row]').forEach(el=>el.addEventListener('input',()=>{state[el.dataset.col][Number(el.dataset.row)]=el.value;save()}));$('#nextBtn').onclick=()=>{showModal(`<h2>정말 모두 확인했나요?</h2><p>AI가 읽은 내용과 실제로 쓴 활동지를 빠짐없이 비교했는지 다시 확인해 주세요.</p><div class="warning">다음 단계로 넘어가면 기록을 다시 수정하거나 1단계로 돌아올 수 없어요.</div><div class="modal-actions"><button class="secondary" data-close>다시 확인하기</button><button class="primary" id="confirmNext">네, 다음 단계로</button></div>`,()=>{$('#confirmNext').onclick=async()=>{let b=$('#confirmNext');b.disabled=true;closeModal();busy('질문을 추출하고 분류하고 있어요.');try{await flushSave();let result=await api('/api/student/advance',{});state=asState(result.student);unbusy();render()}catch(e){unbusy();alert(e.message);render()}}})}}
 function countBy(cat){return state.cards.filter(q=>q.category===cat).length}
 function changedCount(){let old=Object.fromEntries(state.initialCards.map(x=>[x.id,x.category]));return state.cards.filter(x=>!x.added&&old[x.id]&&old[x.id]!==x.category).length}
-function sortView(){return `<section class="sort-panel"><div class="sort-actions"><div class="stat-chip" id="sortStat">전체 질문 ${state.cards.length}개 · 이동 ${changedCount()}개 · 추가 ${state.cards.filter(x=>x.added).length}개</div><div class="question-toolbar"><button class="add-btn" id="viewExcluded">제외된 기록 보기 <span id="excludedCount">${(state.excluded||[]).length}</span></button><button class="add-btn" id="addQuestion">＋ 질문 추가</button></div></div><div class="board">${CATS.map(c=>`<div class="bucket" data-cat="${c.key}"><div class="bucket-title"><b>${c.label}</b><span class="count" data-count="${c.key}">${countBy(c.key)}</span></div><div class="bucket-sub">카드를 꾹 누른 뒤 옮겨 보세요</div><div class="notes-scroller"><div class="notes" data-list="${c.key}"></div></div></div>`).join('')}</div><div class="sort-footer"><span class="helper">카드 터치: 크게 보기 &nbsp; | &nbsp; 길게 눌러 이동: 분류 바꾸기</span><button class="primary paper-cta" id="submitBtn">검토 완료 · 제출하기 &nbsp; ✓</button></div></section>`}
+function sortView(){return `<section class="sort-panel"><div class="sort-actions"><div class="stat-chip" id="sortStat">전체 질문 ${state.cards.length}개 · 이동 ${changedCount()}개 · 추가 ${state.cards.filter(x=>x.added).length}개</div><div class="question-toolbar"><button class="add-btn" id="viewExcluded">제외된 기록 보기 <span id="excludedCount">${(state.excluded||[]).length}</span></button><button class="add-btn" id="addQuestion">＋ 질문 추가</button></div></div><div class="board">${CATS.map(c=>`<div class="bucket" data-cat="${c.key}"><div class="bucket-title"><b>${c.label}</b><span class="count" data-count="${c.key}">${countBy(c.key)}</span></div><div class="bucket-sub">카드를 꾹 누른 뒤 옮겨 보세요</div><div class="notes-scroller"><div class="notes" data-list="${c.key}"></div></div></div>`).join('')}</div><div class="sort-footer"><span class="helper">카드 터치: 수정·삭제 &nbsp; | &nbsp; 길게 눌러 이동: 분류 바꾸기</span><button class="primary paper-cta" id="submitBtn">검토 완료 · 제출하기 &nbsp; ✓</button></div></section>`}
 function renderCards(){CATS.forEach(c=>{let list=document.querySelector(`[data-list="${c.key}"]`);if(!list)return;const items=state.cards.filter(x=>x.category===c.key);list.innerHTML=items.length?items.map((q,i)=>`<div class="note ${q.added?'added':''}" role="button" tabindex="0" data-id="${escapeHtml(q.id)}" style="--rotate:${(i%4-1.5)*.36}deg" aria-label="질문 확대: ${escapeHtml(q.text)}"><div class="note-copy">${escapeHtml(q.text)}</div></div>`).join(''):`<div class="empty-notes">질문이 놓일 자리</div>`;const count=$(`[data-count="${c.key}"]`);if(count)count.textContent=items.length});document.querySelectorAll('.note').forEach(el=>{fitCardText(el);el.addEventListener('pointerdown',onPointerDown);el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openQuestion(el.dataset.id)}})}) ;let el=$('#sortStat');if(el)el.textContent=`전체 질문 ${state.cards.length}개 · 이동 ${changedCount()}개 · 추가 ${state.cards.filter(x=>x.added).length}개`}
 function fitCardText(note){const t=note.querySelector('.note-copy');if(!t)return;let f=15;const width=note.clientWidth;if(width<125)f=13; if(width<105)f=12;t.style.fontSize=f+'px';t.style.lineHeight='1.38';for(let i=0;i<12;i++){if(t.scrollHeight<=note.clientHeight-28||f<=10.5)break;f-=.5;t.style.fontSize=f+'px'} }
 
-function bindSort(){renderCards();$('#addQuestion').onclick=addQuestionModal;$('#viewExcluded').onclick=viewExcludedRecords;$('#submitBtn').onclick=()=>{showModal(`<h2>질문 분류를 제출할까요?</h2><p>질문카드를 확인하고 필요한 질문을 모두 추가했는지 살펴봐 주세요.</p><div class="warning">제출한 뒤에는 카드를 추가하거나 옮길 수 없어요.</div><div class="modal-actions"><button class="secondary" data-close>다시 살펴보기</button><button class="primary paper-cta" id="confirmSubmit">최종 제출하기</button></div>`,()=>{$('#confirmSubmit').onclick=async()=>{closeModal();if(teacherSandbox){state.stage=3;state.submittedAt='교사 체험(미저장)';render();return;}busy('제출하고 있어요.');try{await flushSave();const r=await api('/api/student/submit',{});state=asState(r.student);unbusy();render()}catch(e){unbusy();alert(e.message);render()}}})}}
-function openQuestion(id){let q=state.cards.find(x=>x.id===id);if(!q)return;let label=CATS.find(c=>c.key===q.category).label;showModal(`<button class="x-btn" data-close aria-label="닫기">×</button><div class="small-cat">${label}</div><div class="large-note"><p>${escapeHtml(q.text)}</p></div><p style="text-align:center">${state.stage===3?'제출한 질문은 크게 볼 수 있지만 수정할 수 없어요.':'다른 칸으로 옮기고 싶으면 창을 닫고 카드를 꾹 눌러 이동하세요.'}</p><div class="modal-actions"><button class="secondary" data-close>닫기</button></div>`,null,'question')}
+function bindSort(){renderCards();$('#addQuestion').onclick=addQuestionModal;$('#viewExcluded').onclick=viewExcludedRecords;$('#submitBtn').onclick=()=>{showModal(`<h2>질문 분류를 제출할까요?</h2><p>질문카드를 확인하고 필요한 질문을 모두 추가했는지 살펴봐 주세요.</p><div class="warning">제출한 뒤에는 질문을 추가·수정·삭제하거나 옮길 수 없어요.</div><div class="modal-actions"><button class="secondary" data-close>다시 살펴보기</button><button class="primary paper-cta" id="confirmSubmit">최종 제출하기</button></div>`,()=>{$('#confirmSubmit').onclick=async()=>{closeModal();busy('제출하고 있어요.');try{await flushSave();const r=await api('/api/student/submit',{});state=asState(r.student);unbusy();render()}catch(e){unbusy();alert(e.message);render()}}})}}
+function openQuestion(id){
+ const q=state.cards.find(x=>x.id===id);if(!q)return;
+ const label=CATS.find(c=>c.key===q.category).label;
+ const controls=state.stage===2?`<div class="question-edit-actions"><button class="secondary" id="editCardText">✎ 질문 수정</button><button class="danger" id="deleteCardText">질문 삭제</button></div><p class="editor-note" style="text-align:center">질문이 아닌 내용은 삭제하고, 뜻이 애매한 질문은 고쳐 주세요.</p>`:'<p style="text-align:center">제출한 질문은 읽기만 할 수 있어요.</p>';
+ showModal(`<button class="x-btn" data-close aria-label="닫기">×</button><div class="small-cat">${label}</div><div class="large-note"><p>${escapeHtml(q.text)}</p></div>${controls}<div class="modal-actions"><button class="secondary" data-close>닫기</button></div>`,()=>{
+  if(state.stage!==2)return;
+  $('#editCardText').onclick=()=>editQuestionModal(id);
+  $('#deleteCardText').onclick=()=>deleteQuestionModal(id);
+ },'question');
+}
+function editQuestionModal(id){
+ if(state.stage!==2)return;
+ const q=state.cards.find(x=>x.id===id);if(!q)return;
+ showModal(`<button class="x-btn" data-close aria-label="닫기">×</button><h2>질문 문장 수정하기</h2><p>질문의 뜻이 분명해지도록 고쳐 보세요. 원래 기록은 그대로 남아요.</p><label for="editQ">수정할 질문</label><textarea id="editQ" maxlength="500" placeholder="질문을 입력해 주세요.">${escapeHtml(q.text)}</textarea><label>질문 유형</label><div class="cat-choices">${CATS.map(c=>`<label data-cat="${c.key}" class="${c.key===q.category?'selected':''}"><input type="radio" name="editCategory" value="${c.key}" ${c.key===q.category?'checked':''}/>${c.label}</label>`).join('')}</div><div class="modal-actions"><button class="secondary" id="backToCard">취소</button><button class="primary paper-cta" id="confirmEdit" disabled>수정 저장</button></div>`,()=>{
+  const ta=$('#editQ'),btn=$('#confirmEdit');
+  const check=()=>btn.disabled=!ta.value.trim()||ta.value.length>500;
+  ta.addEventListener('input',check);check();
+  document.querySelectorAll('input[name=editCategory]').forEach(el=>el.onchange=()=>document.querySelectorAll('.cat-choices label').forEach(l=>l.classList.toggle('selected',l.querySelector('input').checked)));
+  $('#backToCard').onclick=()=>openQuestion(id);
+  btn.onclick=()=>{
+   if(state.stage!==2||!ta.value.trim())return;
+   const current=state.cards.find(x=>x.id===id);if(!current)return;
+   current.text=ta.value.trim();current.category=document.querySelector('input[name=editCategory]:checked').value;
+   save();closeModal();renderCards();
+  };
+ },'question-edit');
+}
+function deleteQuestionModal(id){
+ if(state.stage!==2)return;
+ const q=state.cards.find(x=>x.id===id);if(!q)return;
+ showModal(`<button class="x-btn" data-close aria-label="닫기">×</button><h2>이 질문을 삭제할까요?</h2><p>질문이 아닌 내용이나 필요 없는 질문만 삭제해 주세요.</p><div class="warning">${escapeHtml(q.text)}</div><p>이 카드만 삭제돼요. 원래 1차·2차 기록과 다른 질문카드는 그대로 남아요.</p><div class="modal-actions"><button class="secondary" id="cancelDelete">취소</button><button class="danger-btn" id="confirmDelete">삭제하기</button></div>`,()=>{
+  $('#cancelDelete').onclick=()=>openQuestion(id);
+  $('#confirmDelete').onclick=()=>{
+   if(state.stage!==2)return;
+   const index=state.cards.findIndex(x=>x.id===id);if(index<0)return;
+   state.cards.splice(index,1);save();closeModal();renderCards();
+  };
+ },'question-delete');
+} 
 function viewExcludedRecords(){
  const excluded=Array.isArray(state.excluded)?state.excluded:[];
  const records=excluded.map((q,i)=>{
@@ -227,32 +274,14 @@ function onPointerCancel(){cleanupDrag();renderCards()}
 function completionStatus(){let count=state.cards.length, moved=changedCount(),added=state.cards.filter(x=>x.added).length;return `질문 ${count}개 · 분류 이동 ${moved}개 · 직접 추가 ${added}개`}
 function reviewBoard(){return `<div class="board" aria-label="제출한 질문 분류 결과">${CATS.map(c=>{const qs=state.cards.filter(q=>q.category===c.key);return `<section class="bucket" data-cat="${c.key}"><div class="bucket-title"><b>${c.label}</b><span class="count">${qs.length}</span></div><div class="bucket-sub">질문카드를 누르면 크게 읽을 수 있어요</div><div class="notes-scroller"><div class="notes">${qs.length?qs.map((q,i)=>`<div class="note ${q.added?'added':''}" role="button" tabindex="0" data-review-id="${escapeHtml(q.id)}" style="--rotate:${(i%4-1.5)*.36}deg" aria-label="질문 크게 보기: ${escapeHtml(q.text)}"><div class="note-copy">${escapeHtml(q.text)}</div></div>`).join(''):'<div class="empty-notes">이 유형에 분류한 질문이 없어요</div>'}</div></div></section>`}).join('')}</div>`}
 function reviewRecord(){return `<section class="panel complete-table-panel" aria-label="제출한 자세히 읽기 기록"><div class="panel-head"><strong>제출한 나의 기록</strong><div class="mini-info">✓ &nbsp; 읽기만 할 수 있어요</div></div><div class="table-viewport"><table class="record-table"><colgroup><col/><col/><col/></colgroup><thead><tr><th scope="col">글</th><th scope="col">1차 기록</th><th scope="col">2차 기록</th></tr></thead><tbody>${rows.map((t,i)=>`<tr><td class="passage"><span class="rowno">장면 ${String(i+1).padStart(2,'0')}</span>${markedPassage(t,i)}</td><td><div class="record-text ${state.first[i]?'':'empty'}">${escapeHtml(state.first[i]||'기록 없음')}</div></td><td><div class="record-text ${state.second[i]?'':'empty'}">${escapeHtml(state.second[i]||'기록 없음')}</div></td></tr>`).join('')}</tbody></table></div></section>`}
-function completeView(){return `<div class="heading"><div class="title-cluster"><p class="eyebrow">FINISH · 제출 완료</p><h1>내가 정리한 질문들이에요!</h1><p class="desc">제출한 결과를 다시 살펴볼 수 있어요. 수정하거나 이동할 수는 없어요.</p></div></div><section class="complete-content" aria-label="제출 결과 보기"><div class="complete-head"><div class="complete-head-main"><span class="complete-check" aria-hidden="true">✓</span><div><h2>${teacherSandbox?'교사용 미리보기입니다. 질문 이동·추가·제출을 시험해도 실제 학생 자료에는 저장되지 않습니다.':student+'번 학생'}, 제출 완료!</h2><p>잘 마쳤어요. 제출한 내용은 그대로 보관돼요.</p></div></div><span class="lock-pill" aria-label="제출 완료, 수정 불가">🔒 수정 잠금</span></div><div class="complete-controls"><div class="view-tabs" role="tablist" aria-label="결과 종류 선택"><button id="tabQuestions" role="tab" aria-selected="${completeTab==='questions'}" class="${completeTab==='questions'?'active':''}" type="button">질문 분류 결과</button><button id="tabRecords" role="tab" aria-selected="${completeTab==='records'}" class="${completeTab==='records'?'active':''}" type="button">자세히 읽기 기록</button></div><span class="result-stat">${completionStatus()}</span></div>${completeTab==='questions'?reviewBoard():reviewRecord()}<div class="complete-footer"><span class="helper">${completeTab==='questions'?'카드를 누르면 질문을 크게 볼 수 있어요. 제출 후에는 위치를 바꿀 수 없어요.':'1차·2차 기록을 읽을 수 있지만 변경할 수 없어요.'}</span></div></section>`}
+function completeView(){return `<div class="heading"><div class="title-cluster"><p class="eyebrow">FINISH · 제출 완료</p><h1>내가 정리한 질문들이에요!</h1><p class="desc">제출한 결과를 다시 살펴볼 수 있어요. 수정하거나 이동할 수는 없어요.</p></div></div><section class="complete-content" aria-label="제출 결과 보기"><div class="complete-head"><div class="complete-head-main"><span class="complete-check" aria-hidden="true">✓</span><div><h2>${student===PRACTICE_NUMBER?'교사 연습용':student+'번 학생'}, 제출 완료!</h2><p>잘 마쳤어요. 제출한 내용은 그대로 보관돼요.</p></div></div><span class="lock-pill" aria-label="제출 완료, 수정 불가">🔒 수정 잠금</span></div><div class="complete-controls"><div class="view-tabs" role="tablist" aria-label="결과 종류 선택"><button id="tabQuestions" role="tab" aria-selected="${completeTab==='questions'}" class="${completeTab==='questions'?'active':''}" type="button">질문 분류 결과</button><button id="tabRecords" role="tab" aria-selected="${completeTab==='records'}" class="${completeTab==='records'?'active':''}" type="button">자세히 읽기 기록</button></div><span class="result-stat">${completionStatus()}</span></div>${completeTab==='questions'?reviewBoard():reviewRecord()}<div class="complete-footer"><span class="helper">${completeTab==='questions'?'카드를 누르면 질문을 크게 볼 수 있어요. 제출 후에는 위치를 바꿀 수 없어요.':'1차·2차 기록을 읽을 수 있지만 변경할 수 없어요.'}</span></div></section>`}
 
 function bindComplete(){
  $('#tabQuestions').onclick=()=>{completeTab='questions';render()};
  $('#tabRecords').onclick=()=>{completeTab='records';render()};
  if(completeTab==='questions')document.querySelectorAll('[data-review-id]').forEach(el=>{fitCardText(el);el.addEventListener('click',()=>openQuestion(el.dataset.reviewId));el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openQuestion(el.dataset.reviewId)}})});
 }
-function applyTeacherSandbox(payload){
- if(!teacherSandbox||!payload||!Number.isInteger(payload.number)||!Array.isArray(payload.cards)||!Array.isArray(payload.excluded))return;
- const cards=payload.cards.filter(x=>x&&typeof x.id==='string'&&typeof x.text==='string'&&['vivid','deep','if'].includes(x.category)).slice(0,350).map(x=>({id:x.id,text:x.text,category:x.category,origin:x.origin||'first',sourceRow:x.sourceRow??null,added:!!x.added}));
- student=payload.number;
- state={stage:2,first:[],second:[],originalFirst:[],originalSecond:[],originalAnnotations:[],annotations:[],initialCards:JSON.parse(JSON.stringify(cards)),cards:JSON.parse(JSON.stringify(cards)),excluded:payload.excluded.slice(0,350).map(x=>({...x})),submittedAt:null,completedAt:null,revision:0};
- render();
-}
-if(teacherSandbox)window.addEventListener('message',e=>{
- if(e.origin!==location.origin||e.source!==window.parent||!e.data||e.data.type!=='rf-teacher-preview-data')return;
- pendingSandbox=e.data.payload;
- if(rows.length)applyTeacherSandbox(pendingSandbox);
-});
-async function init(){try{config=await api('/api/config',undefined,'');numbers=config.numbers;rows=config.passages;
- if(teacherSandbox){
-  if(pendingSandbox)applyTeacherSandbox(pendingSandbox);
-  else app.innerHTML='<div class="shell"><section class="end-panel"><h2>2단계 체험 화면 준비 중</h2><p>교사 화면에서 선택한 학생의 질문을 불러오고 있어요.</p></section></div>';
-  return;
- }
-if(token){try{await loadStudent();return}catch(e){token='';sessionStorage.removeItem('rf-student-token')}}renderLogin()}catch(e){app.innerHTML='<div class="login-wrap" style="margin:20vh auto"><h2>서버에 접속할 수 없어요.</h2><p>'+escapeHtml(e.message)+'</p><p>이 파일은 서버에서 실행해야 합니다. README 안내를 확인해 주세요.</p></div>'}}
+async function init(){try{config=await api('/api/config',undefined,'');numbers=config.numbers;rows=config.passages;if(token){try{await loadStudent();return}catch(e){token='';sessionStorage.removeItem('rf-student-token')}}renderLogin()}catch(e){app.innerHTML='<div class="login-wrap" style="margin:20vh auto"><h2>서버에 접속할 수 없어요.</h2><p>'+escapeHtml(e.message)+'</p><p>이 파일은 서버에서 실행해야 합니다. README 안내를 확인해 주세요.</p></div>'}}
 init();window.addEventListener('resize',()=>{if(state&&(state.stage===2||state.stage===3))document.querySelectorAll('.note').forEach(fitCardText)});
 })();
 </script>

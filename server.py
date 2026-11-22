@@ -16,8 +16,9 @@ DATA=Path(os.getenv('DATA_DIR',str(ROOT/'runtime_data'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 PASSAGE=json.loads((BUNDLED_DATA/'passage.json').read_text(encoding='utf-8'))['passages']
 DEFAULT_REFERENCE_TEXT='\n\n'.join(PASSAGE)
-NUMS=[1]+list(range(3,18))  # 16 real students; no extra practice account
-LOGIN_NUMS=NUMS
+NUMS=[1]+list(range(3,18))  # 실제 학생 16명
+PRACTICE_NUM=18  # 교사 연습용: 학생 통계/기록 등록·내보내기에서 제외
+LOGIN_NUMS=NUMS+[PRACTICE_NUM]
 DB_PATH=DATA/'classroom.sqlite3'
 PRIVATE_PATH=DATA/'settings.private.json'
 API_MODEL=os.getenv('OPENAI_MODEL','gpt-4o-mini')
@@ -43,9 +44,17 @@ def read_json(s):return json.loads(s) if s else None
 def private():
  if PRIVATE_PATH.exists():
   settings=json.loads(PRIVATE_PATH.read_text('utf-8'))
+  if not settings.get('practice_pin'):
+   settings['practice_pin']=str(secrets.randbelow(900000)+100000)
+   temp=PRIVATE_PATH.with_suffix('.tmp')
+   temp.write_text(json.dumps(settings,ensure_ascii=False,indent=2),encoding='utf-8')
+   try:temp.chmod(0o600)
+   except Exception:pass
+   temp.replace(PRIVATE_PATH)
   return settings
  settings={'secret':secrets.token_urlsafe(48),'admin_password':secrets.token_urlsafe(14),
-           'student_pins':{str(n):str(secrets.randbelow(900000)+100000) for n in NUMS}}
+           'student_pins':{str(n):str(secrets.randbelow(900000)+100000) for n in NUMS},
+           'practice_pin':str(secrets.randbelow(900000)+100000)}
  PRIVATE_PATH.write_text(json.dumps(settings,ensure_ascii=False,indent=2),encoding='utf-8')
  try:PRIVATE_PATH.chmod(0o600)
  except Exception:pass
@@ -60,6 +69,48 @@ def db():
  c.execute('PRAGMA journal_mode=WAL')
  return c
 
+# Teacher practice responses: entirely fictional, resembling realistic sixth-grade mixed observations/questions.
+# Indices correspond to 17 fixed story rows; do not use or copy real children's work.
+PRACTICE_FIRST=[
+ '문어 할머니는 왜 말을 다 안 듣고 가버렸을까?',
+ '비늘이 없어지면 행복하지 않다고 생각하는 게 좀 이상하다. 왜 이렇게 생각했지?',
+ '아까 화를 냈는데 파란 물고기는 왜 다시 돌아왔을까?',
+ '그냥 하나만 달라고 한 거 같은데.',
+ '친구한테 주기 싫어했는데 마음이 왜 흔들렸을까?',
+ '한 개쯤은 없어도 괜찮을 거라고 생각했나?',
+ '가장 작은 비늘을 준 이유는 뭘까?',
+ '파란 물고기가 정말 좋아하는 것 같다.',
+ '비늘을 준 뒤 기분이 왜 이상했을까?',
+ '파란 물고기는 비늘을 어디에 끼웠을까?',
+ '다른 물고기들도 비늘을 원했다. 왜 다 몰려들었지?',
+ '나는 아끼는 걸 나눠주기 좀 아까울 것 같다.',
+ '나눠주니까 더 기쁜 게 신기하다. 왜 기쁨이 커졌을까?',
+ '마음이 편안해진 이유는 뭘까?',
+ '자기한테 정말 소중한 비늘인데 그래도 행복하다니, 정말 비늘을 아낄까?',
+ '다른 물고기들이 같이 놀자고 했다.',
+ '내가 무지개 물고기라면 마지막 비늘도 줄까?'
+]
+PRACTICE_SECOND=[
+ '문어 할머니는 무지개 물고기에게 어떤 조언을 했을까?',
+ '무지개 물고기가 비늘이 없으면 행복할 수 없다고 생각한 이유는 뭘까?',
+ '전에 화냈던 무지개 물고기한테 왜 파란 물고기가 다시 돌아왔나?',
+ '파란 물고기가 갖고 싶어 한 건 무엇이었을까?',
+ '무지개 물고기는 파란 물고기의 어떤 말 때문에 마음이 흔들렸을까?',
+ '아주 작은 비늘 하나만 준다면 친구가 될 수 있을까?',
+ '처음 비늘을 주는 무지개 물고기는 어떤 기분이었을까?',
+ '파란 물고기는 비늘을 받고 어떻게 반응했을까?',
+ '무지개 물고기가 파란 물고기를 한참 지켜본 이유는 뭘까?',
+ '파란 물고기가 바닷속을 헤엄친 이유는 뭘까?',
+ '만약 내가 다른 물고기라면 비늘을 달라고 했을까?',
+ '무지개 물고기는 결국 비늘을 몇 개나 나누어 주었을까?',
+ '나도 소중한 물건을 나눠준 적이 있는데 친구가 왜 좋아했는지 생각난다.',
+ '이 이야기에서 나눔이 왜 중요할까?',
+ '무지개 물고기가 마지막 비늘 하나를 남긴 이유는 뭘까?',
+ '다른 물고기들은 왜 무지개 물고기에게 같이 놀자고 했을까?',
+ '나라면 친구를 얻기 위해 소중한 물건을 나누어 줄까?'
+]
+assert len(PRACTICE_FIRST)==len(PASSAGE)==len(PRACTICE_SECOND)
+
 def initialize():
  with db() as c:
   c.execute('CREATE TABLE IF NOT EXISTS student (number INTEGER PRIMARY KEY, phase INTEGER NOT NULL DEFAULT 1, original_first TEXT NOT NULL, original_second TEXT NOT NULL, first TEXT NOT NULL, second TEXT NOT NULL, initial_cards TEXT NOT NULL DEFAULT "[]", cards TEXT NOT NULL DEFAULT "[]", excluded TEXT NOT NULL DEFAULT "[]", criteria_version INTEGER, updated_at TEXT, stage1_at TEXT, submitted_at TEXT, revision INTEGER NOT NULL DEFAULT 0)')
@@ -71,7 +122,6 @@ def initialize():
    c.execute("ALTER TABLE student ADD COLUMN original_annotations TEXT NOT NULL DEFAULT '[]'")
   if 'annotations' not in columns:
    c.execute("ALTER TABLE student ADD COLUMN annotations TEXT NOT NULL DEFAULT '[]'")
-  c.execute('CREATE TABLE IF NOT EXISTS teacher_trial_snapshot (number INTEGER PRIMARY KEY, record TEXT NOT NULL, saved_at TEXT NOT NULL)')
   c.execute('CREATE TABLE IF NOT EXISTS import_batch (id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT NOT NULL, imported_at TEXT NOT NULL, student_numbers TEXT NOT NULL, sha256 TEXT NOT NULL, file_bytes INTEGER NOT NULL DEFAULT 0)')
   c.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
   c.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',('criteria',dumps(DEFAULT_CRITERIA)))
@@ -80,32 +130,13 @@ def initialize():
   c.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',('reference_version','1'))
   for n in NUMS:
    arr=dumps(['']*len(PASSAGE));c.execute('INSERT OR IGNORE INTO student(number,original_first,original_second,first,second,updated_at) VALUES (?,?,?,?,?,?)',(n,arr,arr,arr,arr,utcnow()))
+  # 연습 계정 최초 생성 때만 가상 기록을 입력함. 이미 있는 실제/연습 기록은 변경하지 않음.
+  exists=c.execute('SELECT 1 FROM student WHERE number=?',(PRACTICE_NUM,)).fetchone()
+  if not exists:
+   first=dumps(PRACTICE_FIRST);second=dumps(PRACTICE_SECOND)
+   c.execute('INSERT INTO student(number,original_first,original_second,first,second,updated_at) VALUES (?,?,?,?,?,?)',
+    (PRACTICE_NUM,first,second,first,second,utcnow()))
 initialize()
-
-def store_teacher_trial_snapshot(c,n):
- # Teacher-only explicit checkpoint. Preserve all fields exactly, including edited
- # first/second records, photo marks, cards, original import provenance and timestamps.
- if n not in NUMS:raise ApiError(400,'실제 학생 번호를 선택해 주세요.')
- if c.execute('SELECT 1 FROM teacher_trial_snapshot WHERE number=?',(n,)).fetchone():
-  raise ApiError(409,'이 학생의 시험 전 백업이 이미 있어요. 먼저 복원해 주세요.')
- row=c.execute('SELECT * FROM student WHERE number=?',(n,)).fetchone()
- if not row or row['phase']!=1:
-  raise ApiError(409,'시험 전 백업은 1단계 상태에서만 만들 수 있어요. 이미 진행한 학생의 기록은 건드리지 않았어요.')
- c.execute('INSERT INTO teacher_trial_snapshot(number,record,saved_at) VALUES (?,?,?)',(n,dumps(dict(row)),utcnow()))
-
-def restore_teacher_trial_snapshot(c,n):
- if n not in NUMS:raise ApiError(400,'실제 학생 번호를 선택해 주세요.')
- snap=c.execute('SELECT record FROM teacher_trial_snapshot WHERE number=?',(n,)).fetchone()
- if not snap:raise ApiError(409,'시험 전 백업이 없어요. 기존 학생 기록을 보호하기 위해 초기화하지 않았어요.')
- row=read_json(snap['record'])
- current=c.execute('SELECT * FROM student WHERE number=?',(n,)).fetchone()
- if not current:raise ApiError(404,'학생 자료가 없어요.')
- cols=[key for key in row if key not in ('number','revision')]
- # Revision MUST increase so a stale student browser cannot replay trial edits.
- values=[row[k] for k in cols]
- values.extend([current['revision']+1,n])
- c.execute(f'UPDATE student SET {", ".join(k+"=?" for k in cols)}, revision=? WHERE number=?',values)
- c.execute('DELETE FROM teacher_trial_snapshot WHERE number=?',(n,))
 
 def get_student(c,n):
  row=c.execute('SELECT * FROM student WHERE number=?',(n,)).fetchone()
@@ -297,30 +328,38 @@ def validate_cards(incoming,existing):
   seen.add(id)
   if id in by_id:
    old=by_id[id]
-   if txt!=old['text']:raise ApiError(400,'기존 질문의 글은 변경할 수 없어요.')
-   out.append({**old,'category':cat})
+   # Keep immutable AI provenance and original snapshot. Students may revise text/category.
+   out.append({**old,'text':txt.strip(),'category':cat})
   else:
    if not id.startswith('added-'):raise ApiError(400,'추가한 질문의 ID가 올바르지 않아요.')
    out.append({'id':id,'text':txt.strip(),'category':cat,'origin':'student','sourceRow':None,'added':True})
- if any(id not in seen for id in by_id):raise ApiError(400,'질문카드를 삭제할 수 없어요.')
+ # An omitted ID means the student removed that card in stage 2.
+ # initial_cards and original_first/second remain unchanged as the audit trail.
  return out
 
 def xlsx_bytes(snapshots):
  # Office Open XML 파일을 파이썬 기본 모듈로 구성 (설치할 추가 패키지 없음)
- rows1=[['학생번호','단계','최근 수정','1단계 완료','최종 제출','AI 질문 수','최종 카드 수','직접 추가 수','이동 수']]
+ rows1=[['학생번호','단계','최근 수정','1단계 완료','최종 제출','AI 질문 수','최종 카드 수','직접 추가 수','이동 수','AI 질문 문장 수정 수','AI 질문 삭제 수']]
  rows2=[['학생번호','행','본문','AI 1차 기록','학생 수정 1차 기록','AI 2차 기록','학생 수정 2차 기록']]
- rows3=[['학생번호','질문 ID','질문','기록 차수','본문 행','최초 AI 분류','최종 분류','직접 추가']]
+ rows3=[['학생번호','질문 ID','질문','기록 차수','본문 행','최초 AI 분류','최종 분류','직접 추가','원래 AI 질문','문장 수정 여부','처리 상태']]
  rows4=[['학생번호','원본·수정','행','표시 유형','색상','본문 발췌','출처']]
  labels={'vivid':'생생','deep':'곰곰','if':'라면'}
  for s in snapshots:
   initial={q['id']:q for q in s['initial_cards']};moved=sum(q['category']!=initial[q['id']]['category'] for q in s['cards'] if q['id'] in initial)
-  rows1.append([s['number'],s['phase'],s['updated_at'],s['stage1_at'],s['submitted_at'],len(initial),len(s['cards']),sum(q.get('added',False) for q in s['cards']),moved])
+  retained_ids={q['id'] for q in s['cards']}
+  text_edited=sum(q['text']!=initial[q['id']]['text'] for q in s['cards'] if q['id'] in initial)
+  removed_ids=set(initial)-retained_ids
+  rows1.append([s['number'],s['phase'],s['updated_at'],s['stage1_at'],s['submitted_at'],len(initial),len(s['cards']),sum(q.get('added',False) for q in s['cards']),moved,text_edited,len(removed_ids)])
   for i,passage in enumerate(PASSAGE):rows2.append([s['number'],i+1,passage,s['original_first'][i],s['first'][i],s['original_second'][i],s['second'][i]])
   for tag,arr in [('원본',s['original_annotations']),('수정',s['annotations'])]:
    for a in arr:
     rows4.append([s['number'],tag,a['row']+1,'형광펜' if a['type']=='highlight' else '밑줄',a['color'],PASSAGE[a['row']][a['start']:a['end']],a.get('source','')])
   for q in s['cards']:
-   old=initial.get(q['id']);rows3.append([s['number'],q['id'],q['text'],('1차' if q.get('origin')=='first' else '2차' if q.get('origin')=='second' else '학생 추가'),q.get('sourceRow'),labels.get(old['category'],'') if old else '',labels[q['category']],'O' if q.get('added') else ''])
+   old=initial.get(q['id'])
+   rows3.append([s['number'],q['id'],q['text'],('1차' if q.get('origin')=='first' else '2차' if q.get('origin')=='second' else '학생 추가'),q.get('sourceRow'),labels.get(old['category'],'') if old else '',labels[q['category']],'O' if q.get('added') else '',old['text'] if old else '','O' if old and old['text']!=q['text'] else '','유지'])
+  for id in removed_ids:
+   old=initial[id]
+   rows3.append([s['number'],id,'',('1차' if old.get('origin')=='first' else '2차' if old.get('origin')=='second' else '학생 추가'),old.get('sourceRow'),labels.get(old['category'],''),'','',old['text'],'','삭제'])
  def xmlsheet(rows):
   x=['<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetData>']
   for r,row in enumerate(rows,1):
@@ -365,7 +404,7 @@ class Handler(SimpleHTTPRequestHandler):
  def do_POST(self):return self.execute(self.post_request)
  def get_request(self):
   path=urlsplit(self.path).path
-  if path=='/api/config':return self.json_response(200,{'numbers':LOGIN_NUMS,'passages':PASSAGE,'demo':DEMO_MODE,'requiresPin':REQUIRE_PIN,'rows':len(PASSAGE)})
+  if path=='/api/config':return self.json_response(200,{'numbers':LOGIN_NUMS,'practice_number':PRACTICE_NUM,'passages':PASSAGE,'demo':DEMO_MODE,'requiresPin':REQUIRE_PIN,'rows':len(PASSAGE)})
   if path=='/api/student/me':
    number=self.auth('student')['number']
    with db() as c:s=get_student(c,number)
@@ -379,8 +418,8 @@ class Handler(SimpleHTTPRequestHandler):
     reference_text=c.execute('SELECT value FROM settings WHERE key="reference_text"').fetchone()['value']
     reference_version=int(c.execute('SELECT value FROM settings WHERE key="reference_version"').fetchone()['value'])
     imports=import_listing(c)
-    trial_snapshots=[{'number':r['number'],'saved_at':r['saved_at']} for r in c.execute('SELECT number,saved_at FROM teacher_trial_snapshot')]
-   return self.json_response(200,{'students':items,'trial_snapshots':trial_snapshots,'imports':imports,'criteria':criteria,'criteria_version':version,'reference_text':reference_text,'reference_version':reference_version,'mode':('demo' if DEMO_MODE else ('api' if KEY else 'no-key')),'requiresPin':REQUIRE_PIN,'student_pins':PRIV['student_pins'] if REQUIRE_PIN else {}})
+    practice=get_student(c,PRACTICE_NUM)
+   return self.json_response(200,{'students':items,'practice':{'phase':practice['phase'],'updated_at':practice['updated_at']},'practice_pin':PRIV['practice_pin'] if REQUIRE_PIN else None,'imports':imports,'criteria':criteria,'criteria_version':version,'reference_text':reference_text,'reference_version':reference_version,'mode':('demo' if DEMO_MODE else ('api' if KEY else 'no-key')),'requiresPin':REQUIRE_PIN,'student_pins':PRIV['student_pins'] if REQUIRE_PIN else {}})
   if path=='/api/teacher/export':
    self.auth('teacher')
    with db() as c:items=[get_student(c,n) for n in NUMS]
@@ -400,7 +439,7 @@ class Handler(SimpleHTTPRequestHandler):
    n=body.get('number')
    if type(n)!=int or n not in LOGIN_NUMS:raise ApiError(400,'번호를 선택해 주세요.')
    login_check(self.client_address[0],'student')
-   expected_pin=PRIV['student_pins'][str(n)]
+   expected_pin=PRIV['practice_pin'] if n==PRACTICE_NUM else PRIV['student_pins'][str(n)]
    if REQUIRE_PIN and str(body.get('pin',''))!=expected_pin:
     login_failed(self.client_address[0],'student')
     raise ApiError(403,'접속 코드가 일치하지 않습니다.')
@@ -458,21 +497,6 @@ class Handler(SimpleHTTPRequestHandler):
     return self.json_response(200,{'student':s})
   if path.startswith('/api/teacher/'):
    self.auth('teacher')
-   if path=='/api/teacher/save-trial':
-    n=body.get('number')
-    if type(n)!=int or n not in NUMS or body.get('confirm') is not True:
-     raise ApiError(400,'학생 번호와 시험 시작 확인을 확인해 주세요.')
-    with LOCK,db() as c:
-     store_teacher_trial_snapshot(c,n)
-    return self.json_response(200,{'ok':True,'number':n})
-   if path=='/api/teacher/restore-trial':
-    n=body.get('number')
-    if type(n)!=int or n not in NUMS or body.get('confirm_number')!=str(n):
-     raise ApiError(400,'복원할 학생 번호를 정확히 입력해 주세요.')
-    with LOCK,db() as c:
-     restore_teacher_trial_snapshot(c,n)
-     restored=get_student(c,n)
-    return self.json_response(200,{'ok':True,'number':n,'phase':restored['phase']})
    if path=='/api/teacher/preview-classification':
     n=body.get('number')
     if type(n)!=int or n not in NUMS:raise ApiError(400,'미리 볼 학생 번호를 선택해 주세요.')
