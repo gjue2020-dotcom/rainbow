@@ -487,14 +487,31 @@ class Handler(SimpleHTTPRequestHandler):
      anns,missing=parse_photo_annotations(items)
      staged.append((int(num),anns));unmatched.extend([{'student':int(num),**x} for x in missing])
     if not staged:raise ApiError(400,'등록할 표시 자료가 없어요.')
+    # Apply only to safe students. NEVER replace any annotation already present,
+    # never change a student's phase or writing, and never let one protected
+    # student cause the other eligible students to lose their import.
+    applied=[]; skipped=[]; no_marks=[]
     with LOCK,db() as c:
      for n,anns in staged:
+      if not anns:
+       no_marks.append(n)
+       continue
       current=get_student(c,n)
-      if current['phase']!=1 or current['annotations']!=current['original_annotations']:
-       raise ApiError(409,f'{n}번은 이미 본문 표시를 수정하거나 2단계로 이동했어요. 표시를 덮어쓰지 않았어요.')
-     for n,anns in staged:
-      c.execute('UPDATE student SET original_annotations=?,annotations=?,revision=revision+1,updated_at=? WHERE number=?',(dumps(anns),dumps(anns),utcnow(),n))
-    return self.json_response(200,{'ok':True,'students':[n for n,_ in staged],'count':sum(len(a) for _,a in staged),'unmatched':unmatched})
+      if current['phase']!=1:
+       skipped.append({'number':n,'reason':'이미 2단계 이상 진행함'})
+       continue
+      if current['annotations']!=current['original_annotations']:
+       skipped.append({'number':n,'reason':'학생이 본문 표시를 수정함'})
+       continue
+      if current['original_annotations'] or current['annotations']:
+       skipped.append({'number':n,'reason':'본문 표시가 이미 등록되어 있음'})
+       continue
+      c.execute('UPDATE student SET original_annotations=?,annotations=?,revision=revision+1,updated_at=? WHERE number=?',
+       (dumps(anns),dumps(anns),utcnow(),n))
+      applied.append((n,len(anns)))
+    return self.json_response(200,{'ok':True,'students':[n for n,_ in applied],
+      'count':sum(count for _,count in applied), 'skipped':skipped,
+      'empty_students':no_marks,'unmatched':unmatched})
    if path=='/api/teacher/import':
     students=body.get('students')
     if not isinstance(students,dict):raise ApiError(400,'students 항목을 확인해 주세요.')

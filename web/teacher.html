@@ -22,7 +22,7 @@ input,textarea{border:1px solid #d1e2e2;border-radius:10px;padding:11px 13px;wid
  <section class="panel"><h2>AI 참고용 텍스트 전문</h2><p class="help">AI가 세 유형을 구분할 때 참고할 이야기 본문이에요. 현재는 업로드한 활동지의 17개 본문 행이 기본으로 들어 있어요. 작품의 앞부분까지 참고하게 하려면 그 내용을 이곳에 추가한 뒤 저장하세요. 이 칸은 학생에게 보이지 않으며, 저장 이후 AI 분류부터 반영돼요.</p><div class="form-group"><label for="referenceText">AI가 참고할 원문 전체</label><textarea id="referenceText" style="min-height:250px;line-height:1.85" placeholder="이야기 본문을 입력하세요."></textarea></div><div class="actions"><button class="primary" id="saveReference">AI 참고 본문 저장하기</button><span class="muted" id="referenceVersion"></span></div><p class="muted">이미 2단계로 넘어가 AI 분류를 완료한 학생의 질문카드는 자동으로 다시 분류되지 않아요. 실제 학생 활동이 시작하기 전에 등록·시험해 주세요.</p></section>
  <section class="grid2"><div class="panel"><h2>학생 자료 등록</h2><p class="help">내일 손글씨를 인식해서 만든 JSON 파일을 선택하면 학생 번호별 1차·2차 기록을 채울 수 있어요. 원본 한컴 본문 17행은 이미 등록돼 있어요.</p><input class="filepick" type="file" id="studentFile" accept=".json,application/json"/><div class="actions"><button class="primary" id="importButton">학생 기록 불러오기</button><button id="templateButton">빈 입력 양식 다운로드</button></div><p class="muted">학생이 이미 수정 중이거나 2단계로 넘어간 번호는 덮어쓰지 않습니다. 실제 수업 전에 일괄 등록하는 것을 권장해요.</p><h3 style="margin-top:22px">등록한 학생 자료 목록</h3><p class="help">여기에 등록한 JSON 파일 이름·등록 시각·학생 번호를 표시해요. 서버에는 파일 원본 대신 학생 기록만 저장돼요. <strong>삭제하면 해당 학생의 등록 기록도 빈칸으로 초기화돼요.</strong> 활동을 시작한 학생의 기록은 삭제를 막아요.</p><div class="import-list" id="importList"><span class="muted">등록 내역을 확인하고 있어요.</span></div><p class="muted">기능 추가 전에 올린 자료는 파일명을 복구할 수 없어 ‘기존 등록 자료’로 표시돼요. 다른 그림책으로 바꾸는 기능과는 별개예요.</p></div>
  <div class="panel"><h2>질문 분류 기준</h2><p class="help">AI가 1차·2차 기록에서 핵심 질문을 찾아 생생·곰곰·라면질문으로 분류할 때 사용할 기준이에요. 기존 제출 결과는 바뀌지 않아요.</p><div class="form-group"><label for="vivid">생생질문</label><textarea id="vivid"></textarea></div><div class="form-group"><label for="deep">곰곰질문</label><textarea id="deep"></textarea></div><div class="form-group"><label for="if">라면질문</label><textarea id="if"></textarea></div><div class="form-group"><label for="extra">추가 지침</label><textarea id="extra"></textarea></div><div class="actions"><button class="primary" id="saveCriteria">분류 기준 저장하기</button><button id="testAI">AI 연결 시험</button><span class="muted" id="criteriaVersion"></span></div></div></section>
- <section class="panel"><h2>종이 활동지의 밑줄·형광펜 표시 등록</h2><p class="help">별도 추출한 표시 JSON 파일을 등록하면 학생 화면의 본문에 표시가 나타납니다. 종이 사진에서 추정한 표시이므로 반드시 학생이 확인·수정해야 해요. 1차·2차 글 기록과 이미 저장한 AI 본문·분류 기준은 건드리지 않습니다.</p><input class="filepick" type="file" id="markerFile" accept=".json,application/json"/><div class="actions"><button id="importMarkers" class="primary">본문 표시 자료 등록</button><span class="muted">1단계에서 아직 본문 표시를 수정하지 않은 학생만 등록 가능</span></div></section>
+ <section class="panel"><h2>종이 활동지의 밑줄·형광펜 표시 등록</h2><p class="help">별도 추출한 표시 JSON 파일을 등록하면 학생 화면의 본문에 표시가 나타납니다. 종이 사진에서 추정한 표시이므로 반드시 학생이 확인·수정해야 해요. 1차·2차 글 기록과 이미 저장한 AI 본문·분류 기준은 건드리지 않습니다.</p><input class="filepick" type="file" id="markerFile" accept=".json,application/json"/><div class="actions"><button id="importMarkers" class="primary">본문 표시 자료 등록</button><span class="muted">1단계이고 표시가 아직 없는 학생만 추가 · 이미 진행한 학생은 건너뜁니다</span></div><p id="markerImportStatus" class="help" role="status" aria-live="polite">등록 결과와 제외된 학생 번호가 여기에 표시돼요.</p></section>
   <section class="panel"><div class="actions" style="justify-content:space-between"><h2>학생 진행 현황</h2><button class="primary" id="export">전체 결과 엑셀 저장 ↓</button></div><div class="student-grid" id="studentGrid"></div></section>
  <section class="panel" id="detail"><h2 id="detailTitle">학생 번호를 선택해 주세요.</h2><div class="actions" style="margin-bottom:12px"><button id="previewStudent">선택 학생 AI 질문 분류 미리보기</button><span class="muted">질문 추출 결과만 확인하며 학생의 단계나 기록을 변경하지 않아요. 실제 API 호출 비용은 발생할 수 있어요.</span></div><div id="previewContent"></div><div id="detailContent"></div></section>
  <p id="message"></p>
@@ -96,7 +96,26 @@ $('#previewStudent').onclick=async()=>{
   }catch(e){$('#previewContent').innerHTML='';notice('질문 분류 미리보기 실패: '+e.message,true)}finally{btn.disabled=false}
 };
 $('#testAI').onclick=async()=>{try{notice('시험 문장으로 AI 연결을 확인하고 있어요.');let r=await api('/api/teacher/test-ai',{});notice('AI 연결 성공! 질문 '+r.count+'개를 분류했어요. (학생 데이터는 변경되지 않았어요.)')}catch(e){notice('AI 연결 시험 실패: '+e.message,true)}};
-$('#importMarkers').onclick=async()=>{const file=$('#markerFile').files[0];if(!file){notice('표시 JSON 파일을 선택해 주세요.',true);return}try{const j=JSON.parse(await file.text());const result=await api('/api/teacher/import-annotations',j);const missed=result.unmatched?.length||0;notice(`본문 표시 ${result.count}개를 ${result.students.length}명의 기록에 등록했어요. ${missed?`본문 어구와 일치하지 않아 건너뛴 표시 ${missed}개. 원본과 학생 화면을 비교해 주세요.`:'학생이 종이 활동지와 비교해야 합니다.'}`);$('#markerFile').value='';await refresh()}catch(e){notice('표시 등록 실패: '+e.message,true)}};
+$('#importMarkers').onclick=async()=>{
+ const file=$('#markerFile').files[0],status=$('#markerImportStatus'),btn=$('#importMarkers');
+ if(!file){status.textContent='먼저 밑줄·형광펜 등록용 JSON 파일을 선택해 주세요.';status.className='alert';return}
+ btn.disabled=true;status.className='help';status.textContent='본문 표시 등록 결과를 확인하고 있어요…';
+ try{
+  const data=JSON.parse(await file.text());const result=await api('/api/teacher/import-annotations',data);
+  const skipped=result.skipped||[],noMarks=result.empty_students||[],missed=result.unmatched||[];
+  const messages=[`${result.students.length}명 · 본문 표시 ${result.count}개 신규 등록`];
+  if(result.students.length)messages.push(`등록된 학생: ${result.students.join(', ')}번`);
+  if(skipped.length)messages.push('기존 기록을 보호해 제외: '+skipped.map(s=>`${s.number}번 (${s.reason})`).join(', '));
+  if(noMarks.length)messages.push(`원본 표시가 없는 학생: ${noMarks.join(', ')}번`);
+  if(missed.length)messages.push(`본문 문구와 일치하지 않아 등록 못한 표시: ${missed.length}개`);
+  if(!result.students.length)messages.push('새로 등록한 표시는 없어요. 위 제외 사유를 확인하세요. 기존 학생 기록은 그대로 유지됐어요.');
+  else messages.push('기존 1차·2차 글 기록은 바뀌지 않았어요. 사진 추정 표시이니 원본 종이와 대조하세요.');
+  status.textContent=messages.join('\n');status.style.whiteSpace='pre-line';status.className=result.students.length?'success':'alert';
+  notice(result.students.length?'본문 표시 등록 결과가 바로 위에 표시됐어요.':'신규 등록 0건입니다. 바로 위 제외 사유를 확인하세요.',!result.students.length);
+  if(result.students.length)$('#markerFile').value='';
+  await refresh();
+ }catch(e){status.textContent='표시 등록 실패: '+e.message+' (기존 학생 기록은 변경하지 않았어요.)';status.className='alert';notice(status.textContent,true)}finally{btn.disabled=false}
+};
  $('#importButton').onclick=async()=>{let f=$('#studentFile').files[0];if(!f){notice('JSON 파일을 선택해 주세요.',true);return}try{let data=JSON.parse(await f.text());let result=await api('/api/teacher/import',{...data,source_filename:f.name});notice('학생 '+result.updated.join(', ')+'번 자료를 등록했어요.');$('#studentFile').value='';await refresh()}catch(e){notice('자료 등록 실패: '+e.message,true)}};
 async function saveBlob(path,filename){let blob=await api(path),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
 $('#templateButton').onclick=()=>saveBlob('/api/teacher/template','student_records_template.json').catch(e=>notice(e.message,true));
